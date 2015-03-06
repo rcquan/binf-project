@@ -66,6 +66,23 @@ Moreover, since our goal is to detect early onset of sepsis, we ideally want our
 
 ## Tools
 
-We will be using the `glm`, `e1071`, `rpart`, and `caret` packages from CRAN for model training, testing, and validation. We may elect to validate using the `sklearn` library in Python.  
+We will be using the `glm`, `e1071`, `rpart`, and `caret` packages from CRAN for model training, testing, and validation. We may elect to validate using the `sklearn` library in Python.
 
 Data for the analysis will be pulled from either the flat-files via a Python script or a virtual machine preloaded with a PostgreSQL database - both of which are available on PhysioNet. 
+
+## Potential Features
+
+http://www.uptodate.com/contents/evaluation-and-management-of-severe-sepsis-and-septic-shock-in-adults
+
+* continuity of severity (SIRS, sepsis, severe sepsis, septic shock)
+* SIRS
+* management of respiration, securing airway (pulse oximetry)
+* hypoxemia
+* hypotension (perfusion)
+* hypoperfusion (including tachycardia, exclude if on beta blockers)
+* elevated serum lactate (organ hypoperfusion)
+
+http://www.uptodate.com/contents/pathophysiology-of-sepsis?source=see_link
+
+* balance of pro-inflammatory and anti-inflammatory mediators, when pro-inflammatory (cytokines) becomes more general inflammation, transition to SIRS occurs (perhaps SIRS is already too late?)
+* effects of microorganisms (endotoxin)
