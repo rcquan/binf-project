@@ -14,6 +14,14 @@ This project will focus on building a prediction model for the onset of sepsis i
 
 Generalizability of the model would only go as far as the confines of the MIMIC II Clinical Database, from the assumption that prediction power is only applicable within the same practice in which the EMR data was collected.
 
+## Background
+
+Sepsis is systemic inflammatory response syndrome (SIRS), secondary to a documented infection. Sepsis can present itself on a continuum that ranges from sepsis, severe sepsis, and septic shock, resulting in multiple organ dysfunction. The symptoms of sepsis are often non-specific, and involve difficulty breathing, hypoxemia, hypoperfusion, and hypotension. 
+
+Although sepsis is a common condition worldwide, the current understanding of the pathophysiology of sepsis has increased substantially, and sepsis mortality has declined in the last two decades. The reason for the decline may be attributed to improved supportive care and the inherent symptomatology of patients who fall prey to sepsis. 
+
+The best form of treatment is preventative treatment, which is most often the case when it comes to life-threatening conditions. Early diagnosis and appropriate therapy must be given even before certain laboratory tests are known, which bases the diagnosis on particular symptoms that occur together. 
+
 ## Description of Dataset
 
 The data will be from the Multiparameter Intelligent Monitoring in Intensive Care Database (MIMIC II), which presents ICU patient records for approximately 25,000 adults at Boston's Beth Israel Deaconess Medical Center.
@@ -74,15 +82,29 @@ Data for the analysis will be pulled from either the flat-files via a Python scr
 
 http://www.uptodate.com/contents/evaluation-and-management-of-severe-sepsis-and-septic-shock-in-adults
 
-* continuity of severity (SIRS, sepsis, severe sepsis, septic shock)
-* SIRS
-* management of respiration, securing airway (pulse oximetry)
-* hypoxemia
-* hypotension (perfusion)
-* hypoperfusion (including tachycardia, exclude if on beta blockers)
+http://library.ahima.org/xpedio/groups/public/documents/ahima/bok1_033812.hcsp?dDocName=bok1_033812
+
+The population that will fit the eligibility criteria for this particular study include those that have been confirmed with any diagnoses relating to respiratory distress, hypoxemia, hypotension, and hypoperfusion
+
+* continuity of severity (SIRS, sepsis, severe sepsis, septic shock) via ICD code; see website above for specifics
+* management of respiration, respiratory distress, 786.09
+* management of respiration, D_CODEDITEMS, OTHER RESP OR PROCEDURE
+* hypoxemia 799.02
+* hypotension 458, 796.3
+* hypoperfusion (including tachycardia, exclude if on beta blockers) 785.50
 * elevated serum lactate (organ hypoperfusion)
+* fever, chills
+* mental function is altered
+* hyperventilation with respiratory alkolosis
 
 http://www.uptodate.com/contents/pathophysiology-of-sepsis?source=see_link
 
 * balance of pro-inflammatory and anti-inflammatory mediators, when pro-inflammatory (cytokines) becomes more general inflammation, transition to SIRS occurs (perhaps SIRS is already too late?)
-* effects of microorganisms (endotoxin)
+* effects of microorganisms (*Staphylococcus (CNS) (15.87%), Escherichia coli (13.0%), Staphylococcus aureus (11.7%), Klebsiella pneumoniae (9.8%), Enterobacter sp (9.5%), Acinetobacter baumannii (9.2%), Pseudomonas aeruginosa (5.7%) and Candida sp*)
+
+
+
+
+movement around hospital
+blood pressure
+immunocompromised
