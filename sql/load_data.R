@@ -8,7 +8,7 @@ db <- src_postgres(dbname = "MIMIC2",
                   user = "ec2-user",
                   password = "thisisalongpassword1234")
 
-qControlID <- sql(
+query <- sql(
 "SELECT subject_id
 FROM mimic2v26.d_patients
 WHERE subject_id NOT IN
@@ -18,13 +18,13 @@ WHERE subject_id NOT IN
 ORDER BY random() LIMIT 5000"
 )
 
-qCaseID <- sql(
+query <- sql(
 "SELECT subject_id
 FROM mimic2v26.icd9
 WHERE code LIKE '995.9%' OR code = '785.52'"
 )
 
-qCE <- sql(
+query <- sql(
 "SELECT * 
 FROM mimic2v26.chartevents 
 WHERE itemid in (615, 646, 6, 51, 455, 6701, 211, 50316, 50468, 20002, 920, 3580) 
@@ -32,14 +32,14 @@ ORDER BY subject_id
 LIMIT 500"
 )
 
-controlID <- tbl(db, qControlID) %>% arrange(subject_id)
-collect(controlID)
-
-df <- tbl(db, qCE) %>% group_by(subject_id, icustay_id) %>% select(charttime, icustay_id, itemid, value1num, value2) %>% collect()
+df <- tbl(db, query) %>% group_by(subject_id, icustay_id) %>% 
+	select(subject_id, icustay_id, itemid, charttime, value1num) %>% 
+	filter(subject_id %in% caseID$subject_id) %>% collect()
 ground <- df %>% filter(row_number()==1)
-test <- df %>% mutate(intHour=as.numeric(difftime(charttime, ground$charttime[subject_id], tz="EST", units="hours")),
+df %<>% mutate(intHour=as.numeric(difftime(charttime, ground$charttime[subject_id], 
+												  tz="EST", units="hours")),
 					  intHourR=round(intHour))
-test %<>% group_by(subject_id, icustay_id, itemid, intHourR) %>% summarize(value1Mean=mean(value1num),
+df %<>% group_by(subject_id, icustay_id, itemid, intHourR) %>% summarize(value1Mean=mean(value1num),
 																		  value1Sd=sd(value1num))
 
 
