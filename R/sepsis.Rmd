@@ -15,6 +15,7 @@ output: html_document
 library(plyr)
 library(dplyr)
 library(reshape2)
+library(magrittr)
 db <- src_postgres(dbname = "MIMIC2",
                   host = "ec2-54-163-173-71.compute-1.amazonaws.com",
                   port = 5432,
@@ -29,13 +30,13 @@ db <- src_postgres(dbname = "MIMIC2",
 
 ```{r, cache=TRUE}
 query <- sql(
-"SELECT DISTINCT subject_id
-FROM mimic2v26.icd9
-WHERE (code LIKE '995.9%' OR code = '785.52')
-AND subject_id IN 
-    (SELECT subject_id
-    FROM mimic2v26.icustay_detail
-    WHERE icustay_first_flg = 'Y' AND subject_icustay_seq = '1' AND icustay_age_group = 'adult')"
+"SELECT subject_id, hadm_id, icustay_id
+FROM mimic2v26.icustay_detail
+WHERE (icustay_first_flg = 'Y' AND subject_icustay_seq = '1' AND icustay_age_group = 'adult')
+AND subject_id IN
+    (SELECT DISTINCT subject_id
+    FROM mimic2v26.icd9
+    WHERE (code LIKE '995.9%' OR code = '785.52'))"
 )
 caseID <- tbl(db, query) %>%
     collect()
@@ -43,17 +44,20 @@ caseID <- tbl(db, query) %>%
 
 ```{r, cache=TRUE}
 query <- sql(
-"SELECT DISTINCT subject_id
-FROM mimic2v26.icd9
-WHERE subject_id IN 
-    (SELECT subject_id
-    FROM mimic2v26.icustay_detail
-    WHERE icustay_first_flg = 'Y' AND subject_icustay_seq = '1' AND icustay_age_group = 'adult')"
+"SELECT subject_id, hadm_id, icustay_id
+FROM mimic2v26.icustay_detail
+WHERE (icustay_first_flg = 'Y' AND subject_icustay_seq = '1' AND icustay_age_group = 'adult')"
 )
 controlID <- tbl(db, query) %>%
     filter(!(subject_id %in% caseID$subject_id)) %>%
     collect()
 
+```
+
+
+```{r}
+ids <- rbind(caseID, controlID)
+ids <- ids$subject_id
 ```
 
 ## Microbiology Events
@@ -70,13 +74,16 @@ controlID <- tbl(db, query) %>%
 ## Demographic
 
 ```{r}
-qDemographic <- sql(
+query <- sql(
 "SELECT *
-FROM mimic2v26.demographic_detail
-LIMIT 500"
+FROM mimic2v26.demographic_detail"
 )
-demographic <- tbl(db, qDemographic)
-demographic %>% 
-    select(subject_id, hadm_id, contains("descr"))
+demographic <- tbl(db, query)
+```
 
+```{r}
+demographic %<>%
+    filter(subject_id %in% ids) %>%
+    select(subject_id, hadm_id, contains("descr")) %>%
+    collect()
 ```
