@@ -54,10 +54,13 @@ controlID <- tbl(db, query) %>%
 
 ```
 
+## Create ID Table
 
 ```{r}
-ids <- rbind(caseID, controlID)
-ids <- ids$subject_id
+set.seed(1)
+randomSubset <- sample(controlID$subject_id, 5000)
+controls <- controlID[controlID$subject_id %in% randomSubset, ]
+ids <- rbind(caseID, controls)
 ```
 
 ## Microbiology Events
@@ -75,15 +78,15 @@ ids <- ids$subject_id
 
 ```{r}
 query <- sql(
-"SELECT *
+"SELECT subject_id, hadm_id, marital_status_descr, overall_payor_group_descr, 
+        religion_descr, admission_type_descr, admission_source_descr
 FROM mimic2v26.demographic_detail"
 )
 demographic <- tbl(db, query)
 ```
 
 ```{r}
-demographic %<>%
-    filter(subject_id %in% ids) %>%
-    select(subject_id, hadm_id, contains("descr")) %>%
+demographic %<>% 
+    filter(subject_id %in% ids$subject_id & hadm_id %in% ids$hadm_id) %>%
     collect()
 ```
