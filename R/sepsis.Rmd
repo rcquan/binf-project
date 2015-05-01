@@ -1,21 +1,27 @@
 ---
 title: "Predicting Sepsis in the ICU"
-author: "Ryan Quan (rcq2102)"
+author: Ryan Quan and Frank Chen
 date: "April 30, 2015"
 output: html_document
 ---
 
-# Load Data
-
-## Connect to Database
-
-```{r}
-# devtools::add_path('~/usr/local/bin/psql')
-# devtools::install("~/Downloads/rpostgresql-read-only/RPostgreSQL/")
+```{r, message=FALSE}
 library(plyr)
 library(dplyr)
 library(reshape2)
 library(magrittr)
+library(lubridate)
+library(knitr)
+opts_knit$set(cache.extra = rand_seed)
+```
+
+# Methods
+
+## Data Source
+
+```{r, message=FALSE}
+# devtools::add_path('~/usr/local/bin/psql')
+# devtools::install("~/Downloads/rpostgresql-read-only/RPostgreSQL/")
 db <- src_postgres(dbname = "MIMIC2",
                   host = "ec2-54-163-173-71.compute-1.amazonaws.com",
                   port = 5432,
@@ -23,12 +29,15 @@ db <- src_postgres(dbname = "MIMIC2",
                   password = "thisisalongpassword1234")
 ```
 
+## Population
 
-## Picking Cases and Controls
+Since our objective is to train a prediction model that will detect the onset of sepsis within the first few hours of admittance to the ICU, we exclude patients who were not admitted to the ICU for the first sequence of their hospital visit. This is denoted by the column `icustay_first_flg`. Moreover, we restrict our analysis to the adult age group, which is defined as patients greater than or equal to 15 years of age. 
 
-### Filtering for First Day ICU Only
+## Outcomes
 
-```{r, cache=TRUE}
+To define positive cases of sepsis, we lumped ICD-9 codes for `sepsis`, `severe sepsis`, and `septic shock`, as these are all part of the "sepsis continuum". 
+
+```{r caseid, cache=TRUE}
 query <- sql(
 "SELECT subject_id, hadm_id, icustay_id
 FROM mimic2v26.icustay_detail
@@ -39,10 +48,13 @@ AND subject_id IN
     WHERE (code LIKE '995.9%' OR code = '785.52'))"
 )
 caseID <- tbl(db, query) %>%
-    collect()
+    collect() %>%
+    mutate(label = "case")
 ```
 
-```{r, cache=TRUE}
+For our controls, we randomly sampled 5000 patients from the MIMIC II database who meet the same exclusionary criteria.
+
+```{r controlid, cache=TRUE}
 query <- sql(
 "SELECT subject_id, hadm_id, icustay_id
 FROM mimic2v26.icustay_detail
@@ -50,43 +62,133 @@ WHERE (icustay_first_flg = 'Y' AND subject_icustay_seq = '1' AND icustay_age_gro
 )
 controlID <- tbl(db, query) %>%
     filter(!(subject_id %in% caseID$subject_id)) %>%
-    collect()
-
+    collect() %>%
+    mutate(label = "control")
 ```
 
-## Create ID Table
+With this, we now create a data frame that contains the labels and unique identifiers for our training set.
 
-```{r}
+```{r, cache=TRUE}
 set.seed(1)
 randomSubset <- sample(controlID$subject_id, 5000)
 controls <- controlID[controlID$subject_id %in% randomSubset, ]
 ids <- rbind(caseID, controls)
 ```
 
-## Microbiology Events
+## Confounding Medical Interventions
 
-```{r}
-# q <- sql(
-# "SELECT *
-# FROM mimic2v26.microbiologyevents
-# LIMIT 500"
-# )
-# shit <- tbl(db, q)
+Since our objective is to predict the onset of sepsis, we must also exclude patients who received antibiotics upon admission into the ICU. If a patient received any antibiotics within the first 24 hours, he or she was dropped from the training set. Doing so will allow us to avoid bias introduced via confounding medical interventions.
+
+```{r microbiology, cache=TRUE}
+query <- sql(
+"SELECT a.subject_id AS subject_id, a.hadm_id AS hadm_id, a.ab_itemid AS ab_itemid, 
+        a.charttime - b.admit_dt AS sepsis_flag
+FROM mimic2v26.microbiologyevents AS a
+JOIN mimic2v26.admissions AS b ON a.subject_id = b.subject_id
+AND a.hadm_id = b.hadm_id"
+)
+microbiology <- tbl(db, query) %>%
+    filter(hadm_id %in% ids$hadm_id) %>%
+    filter(sepsis_flag < "1 day") %>%
+    group_by(subject_id, hadm_id) %>%
+    summarise(sepsis_flag = n()) %>%
+    collect()
 ```
 
-## Demographic
+We now update our labels to reflect this exclusion. As you can see, our `cases` drop substantially. We will need to adjust this class imbalance somehow.
+
+```{r}
+ids %<>% filter(!(hadm_id %in% microbiology$hadm_id))
+table(ids$label)
+```
+
+## Feature Extraction
+
+Since we are interested in creating a classifier that can predict the onset of sepsis using accessible and available clinical data, we restrict our feature set to the `demographic`, `icustay_details`, and `chartevents` tables in the MIMIC II database.
+
+### Demographic
+
+We extract all variables from the `demographic` table, which includes items like religious affiliation, insurance information, and marriage status. From the `icustay_detail` table, we extract patient information that was recorded upon admission, such as age, admission time, weight, height, etc.
+
+```{r demographic, cache=TRUE}
+query <- sql(
+"SELECT *
+FROM mimic2v26.demographic_detail AS a
+JOIN mimic2v26.icustay_detail AS b ON a.subject_id=b.subject_id
+AND a.hadm_id=b.hadm_id"
+)
+demographic <- tbl(db, query) %>%
+    filter(icustay_id %in% ids$icustay_id) %>%
+    select(icustay_id, gender, icustay_intime, icustay_admit_age, contains("descr"), contains("first")) %>%
+    collect()
+```
+
+## Chart Events
+
+For our chart events, we discretize routine clinical measurements taken over the first 24 hours for every hour. 
+
+```{r chartevents, cache=TRUE}
+query <- sql(
+"SELECT subject_id, icustay_id, itemid, charttime, value1num 
+FROM mimic2v26.chartevents 
+WHERE itemid IN (618, 646, 677, 52, 456, 211, 20002, 1542, 677)"
+)
+
+chartevents <- tbl(db, query) %>% 
+	filter(icustay_id %in% ids$icustay_id) %>%
+    ## hour and minutes are lost if not coerced
+	mutate(timeString = as.character(charttime)) %>% 
+	select(-charttime) %>% 
+	collect() %>%
+    mutate(charttime = ymd_hms(timeString),
+           timeString = NULL) %>%
+	group_by(subject_id, icustay_id, itemid) %>%
+    ## set reference time and discretize by the hour
+	mutate(groundTime = min(charttime),
+		   intHour = as.numeric(difftime(charttime, groundTime, units="hours")), 
+		   intHourR = round(intHour)) %>%
+    group_by(subject_id, icustay_id, itemid, intHourR) %>%
+	summarize(mean = mean(value1num),
+	          min = min(value1num),
+	          max = max(value1num),
+			  std = sd(value1num)) %>%
+    ungroup()
+```
+
+Routine clinical measurements along with their respective `itemid` code are shown below:
 
 ```{r}
 query <- sql(
-"SELECT subject_id, hadm_id, marital_status_descr, overall_payor_group_descr, 
-        religion_descr, admission_type_descr, admission_source_descr
-FROM mimic2v26.demographic_detail"
+"SELECT itemid, label
+FROM mimic2v26.d_chartitems
+WHERE itemid IN (618, 646, 677, 52, 456, 211, 20002, 1542, 677)"
 )
-demographic <- tbl(db, query)
+chartLabels <- tbl(db, query) %>%
+    collect()
+chartLabels
 ```
 
 ```{r}
-demographic %<>% 
-    filter(subject_id %in% ids$subject_id & hadm_id %in% ids$hadm_id) %>%
-    collect()
+## tidy up label formatting
+chartLabels %<>%
+    mutate(label = tolower(label),
+           label = gsub(" ", "_", label))
 ```
+
+```{r chartevents2, cache=TRUE}
+charteventsDiscrete <- chartevents %>%
+    join(chartLabels, by="itemid") %>%
+	filter(intHourR >=0 & intHourR <= 24) %>%
+	select(subject_id, icustay_id, label, intHourR, mean) %>%
+	melt(id.vars=c("subject_id", "icustay_id", "label", "intHourR")) %>%
+	dcast(subject_id + icustay_id ~ label + intHourR + variable, value.var="value")
+```
+
+## Feature Matrix
+
+```{r features}
+features <- demographic %>%
+    join(charteventsDiscrete, by="icustay_id") %>%
+    join(ids, by="icustay_id")
+```
+
