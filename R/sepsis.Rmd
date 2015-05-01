@@ -187,8 +187,7 @@ charteventsDiscrete <- chartevents %>%
 ## Feature Matrix
 
 ```{r features}
-features <- demographic %>%
-    join(charteventsDiscrete, by="icustay_id") %>%
-    join(ids, by="icustay_id")
+features <- join(demographic, charteventsDiscrete, by="icustay_id")
+labels <- ids[, c("icustay_id", "label")]
 ```
 
