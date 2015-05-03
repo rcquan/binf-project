@@ -191,3 +191,60 @@ features <- join(demographic, charteventsDiscrete, by="icustay_id")
 labels <- ids[, c("icustay_id", "label")]
 ```
 
+# Imputation of NA Values
+
+```{r}
+# features %>% filter(!subject_id %in% controls$subject_id) %>% nrow
+# features %>% filter(subject_id %in% controls$subject_id) %>% nrow
+# cases <- features %>% filter(icustay_id %in% caseLabels) %>% nrow
+# controls <- features %>% filter(icustay_id %in% controlLabels) %>% nrow
+
+library("plyr")
+features <- join(features, labels, by="icustay_id", type="left")
+detach(package:plyr)
+features$subject_id <- as.numeric(features$subject_id)
+```
+
+```{r}
+imputeCol <- function(col) {  # impute numeric mean & character mode
+	if (class(col)=="numeric") {
+		replace(col, which(is.na(col)), mean(col, na.rm=T))
+	}
+	else {
+		replace(col, which(is.na(col)), modeCalc(col))
+	}
+}
+
+modeCalc <- function(x) {  # mode function
+  ux <- unique(x)
+  return(ux[which.max(tabulate(match(x, ux)))])
+}
+
+checkNA <- function(features) {  # checks NAs
+	apply(features, 2, function(x) { length(which(is.na(x))) })
+}
+
+hotDeckImpute <- function(col) {  # impute numeric mean & character mode
+	replace(col, which(is.na(col)), 
+			col[which(!is.na(col))][sample(seq(length(which(!is.na(col)))), 1)])
+}
+
+# mean and mode imputation
+# subject IDs are unusable here
+# several SOFA scores are NAs within one or both labels, delete?
+features %<>% 
+	group_by(label) %>% 
+	mutate_each(., funs(imputeCol)) %>% 
+	ungroup()
+features %>% checkNA
+
+# hot deck imputation 
+# several SOFA scores are NAs within one or both labels, prohibiting group_by
+features %<>% 
+	# group_by(label) %>%
+	mutate_each(., funs(hotDeckImpute)) %>% 
+	ungroup()
+features %>% checkNA
+```
+
+
