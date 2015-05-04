@@ -215,6 +215,10 @@ imputeCol <- function(col) {  # impute numeric mean & character mode
 	}
 }
 
+imputeNaN <- function(col) {
+	replace(col, which(is.nan(col)), mean(col, na.rm=T))
+}
+
 modeCalc <- function(x) {  # mode function
   ux <- unique(x)
   return(ux[which.max(tabulate(match(x, ux)))])
@@ -224,26 +228,34 @@ checkNA <- function(features) {  # checks NAs
 	apply(features, 2, function(x) { length(which(is.na(x))) })
 }
 
-hotDeckImpute <- function(col) {  # impute numeric mean & character mode
-	replace(col, which(is.na(col)), 
+hotDeckImpute <- function(col) {  # impute via random sampling from each label class
+	set.seed(1)
+	if (length(col[which(!is.na(col))])!=0) {
+		replace(col, which(is.na(col)), 
 			col[which(!is.na(col))][sample(seq(length(which(!is.na(col)))), 1)])
+	}
+	else {
+		col %<>% as.data.frame %>% ungroup %>% unlist %>% as.numeric
+		replace(col, which(is.na(col)), 
+			col[which(!is.na(col))][sample(seq(length(which(!is.na(col)))), 1)])
+	}
 }
 
+# hot deck imputation 
+# some SOFA scores were NAs within one or both labels, prohibiting group_by, fixed by exception handling
+featuresHD <- features %>% 
+	group_by(label) %>%
+	mutate_each(., funs(hotDeckImpute)) %>% 
+	ungroup()
+featuresHD %>% checkNA
+
 # mean and mode imputation
-# subject IDs are unusable here
-# several SOFA scores are NAs within one or both labels, delete?
+# subject IDs are unusable here, use icustay_id instead
 features %<>% 
 	group_by(label) %>% 
 	mutate_each(., funs(imputeCol)) %>% 
-	ungroup()
-features %>% checkNA
-
-# hot deck imputation 
-# several SOFA scores are NAs within one or both labels, prohibiting group_by
-features %<>% 
-	# group_by(label) %>%
-	mutate_each(., funs(hotDeckImpute)) %>% 
-	ungroup()
+	ungroup() %>%
+	mutate_each(., funs(imputeNaN))
 features %>% checkNA
 ```
 
