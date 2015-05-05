@@ -12,6 +12,7 @@ library(reshape2)
 library(magrittr)
 library(lubridate)
 library(knitr)
+library(ggplot2)
 opts_knit$set(cache.extra = rand_seed)
 ```
 
@@ -259,4 +260,35 @@ features %<>%
 features %>% checkNA
 ```
 
+# Descriptives 
+
+```{r}
+numSum <- function(featureSet) {
+	featureSet %>% 
+		group_by(label) %>%
+		summarise_each(funs(min(.), max(.), mean(.), median(.), sd(.)), 
+					   matches("mean|age|weig|sapsi|sofa"))
+}
+
+catSum <- function(featureSet, cat) {
+	return(featureSet %>% group_by_(cat, "label") %>% summarise(count=n()))
+}
+
+catVars <- as.list(colnames(features)[c(2, 5:14)])
+catStats <- lapply(catVars, catSum, featureSet=features)
+
+# loop this graph
+ggplot(catStats[[11]], aes(reorder(icustay_first_service, count), count)) +
+	geom_point(aes(color=as.factor(label), size=count)) +
+	ylab("Count") + 
+	xlab("Trait") + 
+	ggtitle("Descriptive Stats") +
+	scale_color_manual(values = c("red", "blue")) +
+	theme_bw() +
+	coord_flip()
+
+numSum(features)
+numSum(featuresHD)
+
+```
 
