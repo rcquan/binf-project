@@ -274,18 +274,20 @@ catSum <- function(featureSet, cat) {
 	return(featureSet %>% group_by_(cat, "label") %>% summarise(count=n()))
 }
 
+loopDescrPlot <- function(df) {
+	ggplot(df, aes_string(colnames(df)[1], "count")) +
+		geom_point(aes(color=as.factor(label), size=count)) +
+		ylab("Count") + 
+		xlab("Trait") + 
+		ggtitle(colnames(df)[1]) +
+		scale_color_manual(values = c("red", "blue")) +
+		theme_bw() +
+		coord_flip()
+}
+
 catVars <- as.list(colnames(features)[c(2, 5:14)])
 catStats <- lapply(catVars, catSum, featureSet=features)
-
-# loop this graph
-ggplot(catStats[[11]], aes(reorder(icustay_first_service, count), count)) +
-	geom_point(aes(color=as.factor(label), size=count)) +
-	ylab("Count") + 
-	xlab("Trait") + 
-	ggtitle("Descriptive Stats") +
-	scale_color_manual(values = c("red", "blue")) +
-	theme_bw() +
-	coord_flip()
+catPlots <- lapply(catStats, loopDescrPlot)
 
 numSum(features)
 numSum(featuresHD)
