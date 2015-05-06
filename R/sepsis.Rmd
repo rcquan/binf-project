@@ -13,6 +13,9 @@ library(magrittr)
 library(lubridate)
 library(knitr)
 library(ggplot2)
+library(caret)
+library(rpart)
+library(e1071)
 opts_knit$set(cache.extra = rand_seed)
 ```
 
@@ -190,6 +193,7 @@ charteventsDiscrete <- chartevents %>%
 ```{r features}
 features <- join(demographic, charteventsDiscrete, by="icustay_id")
 labels <- ids[, c("icustay_id", "label")]
+# save/load features.RData
 ```
 
 # Imputation of NA Values
@@ -271,24 +275,120 @@ numSum <- function(featureSet) {
 }
 
 catSum <- function(featureSet, cat) {
-	return(featureSet %>% group_by_(cat, "label") %>% summarise(count=n()))
+	return(featureSet %>% group_by_(cat, "label") %>% 
+		   	summarise(count=n()) %>% ungroup %>% 
+		   	group_by_("label") %>% mutate(perc=count/sum(count)))
+}
+
+loopDescrPlot <- function(df) {
+	ggplot(df, aes_string(colnames(df)[1], "perc")) +
+		geom_point(aes(color=as.factor(label), size=perc)) +
+		ylab("Percent") + 
+		xlab("Trait") + 
+		coord_cartesian(xlim=c(0, 1)) +
+		ggtitle(colnames(df)[1]) +
+		scale_color_manual(values = c("red", "blue")) +
+		theme_bw() +
+		coord_flip()
 }
 
 catVars <- as.list(colnames(features)[c(2, 5:14)])
 catStats <- lapply(catVars, catSum, featureSet=features)
-
-# loop this graph
-ggplot(catStats[[11]], aes(reorder(icustay_first_service, count), count)) +
-	geom_point(aes(color=as.factor(label), size=count)) +
-	ylab("Count") + 
-	xlab("Trait") + 
-	ggtitle("Descriptive Stats") +
-	scale_color_manual(values = c("red", "blue")) +
-	theme_bw() +
-	coord_flip()
+catPlots <- lapply(catStats[c(1:7, 10:11)], loopDescrPlot)
+catPlots
 
 numSum(features)
 numSum(featuresHD)
 
 ```
+
+# Center and Scale
+
+```{r}
+centerScale <- function(dtm) {
+	toScale <- dtm %>% dplyr::select(-threadID, -label) %>% scale()
+	dtm %<>% dplyr::select(threadID, label) %>% 
+		cbind(., toScale)
+	return(dtm)
+}
+```
+
+# Training and Testing Sets
+
+```{r}
+createTrainTest <- function(featureSet) {
+	trainIndex <- createDataPartition(featureSet$label, times=1, p=0.7)$Resample1
+	fTrain <<- featureSet[trainIndex, ]
+	fTest <<- featureSet[-trainIndex, ]
+}
+```
+
+# Model Creation
+
+```{r}
+createModels <- function(trainSet) {
+	nlpLogModel <- glm(label ~ ., family=binomial, data=trainSet)
+	nlpNaiveBayes <- naiveBayes(as.factor(label) ~ ., data=trainSet, laplace=0)
+	nlpInfoModel <- rpart(label ~ ., trainSet, method="class", 
+						  parms=list(split="information"))
+	nlpGiniModel <- rpart(label ~ ., trainSet, method="class", 
+						  parms=list(split="gini"))
+	return(list(nlpLogModel, nlpNaiveBayes, nlpInfoModel, nlpGiniModel))
+}
+```
+
+# Cross Validation
+
+```{r}
+crossValidate <- function(trainSet) {
+	tc <- trainControl("cv", 10, savePred=T, 
+					   classProbs=T, summaryFunction=twoClassSummary)  
+	
+	nlpLogModel <- train(as.factor(label) ~ ., data=trainSet, trControl=tc,  
+						 method="glm", metric="ROC")  
+	
+	nbGrid <- expand.grid(.fL=0, .usekernel=F)
+	nlpNaiveBayes <- train(as.factor(label) ~ ., data=trainSet, trControl=tc, 
+						   method="nb", tuneGrid=nbGrid, metric="ROC")  
+	
+	infoGrid <- expand.grid(.C=0.25)
+	nlpInfoModel <- train(as.factor(label) ~ ., data=trainSet, trControl=tc, 
+						  method="J48", tuneGrid=infoGrid, metric="ROC") 
+	
+	rpartGrid <- expand.grid(.cp=0.2)
+	nlpGiniModel <- train(as.factor(label) ~ ., data=trainSet, trControl=tc, 
+						  method="rpart", tuneGrid=rpartGrid, metric="ROC") 
+	return(list(nlpLogModel, nlpNaiveBayes, nlpInfoModel, nlpGiniModel))
+}
+```
+
+# Test Predictions
+
+```{r}
+testResults <- function(models, test, label) {
+	
+	logitPred <- predict(models[[1]], test, link="class") %>% as.data.frame 
+	logitPred <- ifelse(logitPred>0, 1, 0) %>% as.numeric
+	logitConMat <- table(logitPred, label) %>% reportStat
+	
+	nbPred <- predict(models[[2]], test, type="raw") %>% 
+		as.data.frame %>% mutate(predLabel=ifelse(`0`>`1`, 0, 1)) %>% 
+		dplyr::select(predLabel) %>% unlist %>% as.numeric
+	nbConMat <- table(nbPred, label) %>% reportStat
+	
+	treeInfoPred <- predict(models[[3]], test, link="class") %>% 
+		as.data.frame %>% mutate(predLabel=ifelse(`0`>`1`, 0, 1)) %>% 
+		dplyr::select(predLabel) %>% unlist %>% as.numeric
+	treeInfoConMat <- table(treeInfoPred, label) %>% reportStat
+	
+	treeGiniPred <- predict(models[[4]], test, link="class") %>% 
+		as.data.frame %>% mutate(predLabel=ifelse(`0`>`1`, 0, 1)) %>% 
+		dplyr::select(predLabel) %>% unlist %>% as.numeric
+	treeGiniConMat <- table(treeGiniPred, label) %>% reportStat
+	return(list(logistic=logitConMat, naiveBayes=nbConMat, 
+				infoTree=treeInfoConMat, giniTree=treeGiniConMat))
+}
+```
+
+
 
