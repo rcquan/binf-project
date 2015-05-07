@@ -306,8 +306,8 @@ numSum(featuresHD)
 
 ```{r}
 centerScale <- function(dtm) {
-	toScale <- dtm %>% dplyr::select(-threadID, -label) %>% scale()
-	dtm %<>% dplyr::select(threadID, label) %>% 
+	toScale <- dtm %>% dplyr::select(., matches("mean|weig|sapsi|sofa")) %>% scale()
+	dtm %<>% dplyr::select(., -matches("mean|age|weig|sapsi|sofa")) %>% 
 		cbind(., toScale)
 	return(dtm)
 }
