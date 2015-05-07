@@ -266,7 +266,6 @@ features %<>%
 features %>% checkNA
 names(features)[grep("temperature", names(features))] <- paste0("temperature", 0:24)
 str(features)		 
-
 ```
 
 # Descriptives 

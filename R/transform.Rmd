@@ -1,0 +1,269 @@
+---
+title: "Predicting Sepsis in the ICU"
+author: Ryan Quan and Frank Chen
+date: "April 30, 2015"
+output: html_document
+---
+
+```{r, message=FALSE}
+library(plyr)
+library(dplyr)
+library(reshape2)
+library(magrittr)
+library(lubridate)
+library(knitr)
+library(ggplot2)
+library(caret)
+library(rpart)
+library(e1071)
+library(randomForest)
+opts_knit$set(cache.extra = rand_seed)
+```
+
+# Methods
+
+## Data Source
+
+```{r, message=FALSE}
+# devtools::add_path('~/usr/local/bin/psql')
+# devtools::install("~/Downloads/rpostgresql-read-only/RPostgreSQL/")
+db <- src_postgres(dbname = "MIMIC2",
+                  host = "ec2-54-163-173-71.compute-1.amazonaws.com",
+                  port = 5432,
+                  user = "ec2-user",
+                  password = "thisisalongpassword1234")
+```
+
+## Population
+
+Since our objective is to train a prediction model that will detect the onset of sepsis within the first few hours of admittance to the ICU, we exclude patients who were not admitted to the ICU for the first sequence of their hospital visit. This is denoted by the column `icustay_first_flg`. Moreover, we restrict our analysis to the adult age group, which is defined as patients greater than or equal to 15 years of age. 
+
+## Outcomes
+
+To define positive cases of sepsis, we lumped ICD-9 codes for `sepsis`, `severe sepsis`, and `septic shock`, as these are all part of the "sepsis continuum". 
+
+```{r caseid, cache=TRUE}
+query <- sql(
+"SELECT subject_id, hadm_id, icustay_id
+FROM mimic2v26.icustay_detail
+WHERE (icustay_first_flg = 'Y' AND subject_icustay_seq = '1' AND icustay_age_group = 'adult')
+AND subject_id IN
+    (SELECT DISTINCT subject_id
+    FROM mimic2v26.icd9
+    WHERE (code LIKE '995.9%' OR code = '785.52'))"
+)
+caseID <- tbl(db, query) %>%
+    collect() %>%
+    mutate(label = "case")
+```
+
+For our controls, we randomly sampled 5000 patients from the MIMIC II database who meet the same exclusionary criteria.
+
+```{r controlid, cache=TRUE}
+query <- sql(
+"SELECT subject_id, hadm_id, icustay_id
+FROM mimic2v26.icustay_detail
+WHERE (icustay_first_flg = 'Y' AND subject_icustay_seq = '1' AND icustay_age_group = 'adult')"
+)
+controlID <- tbl(db, query) %>%
+    filter(!(subject_id %in% caseID$subject_id)) %>%
+    collect() %>%
+    mutate(label = "control")
+```
+
+With this, we now create a data frame that contains the labels and unique identifiers for our training set.
+
+```{r, cache=TRUE}
+set.seed(1)
+randomSubset <- sample(controlID$subject_id, 5000)
+controls <- controlID[controlID$subject_id %in% randomSubset, ]
+ids <- rbind(caseID, controls)
+```
+
+## Confounding Medical Interventions
+
+Since our objective is to predict the onset of sepsis, we must also exclude patients who received antibiotics upon admission into the ICU. If a patient received any antibiotics within the first 24 hours, he or she was dropped from the training set. Doing so will allow us to avoid bias introduced via confounding medical interventions.
+
+```{r microbiology, cache=TRUE}
+query <- sql(
+"SELECT a.subject_id AS subject_id, a.hadm_id AS hadm_id, a.ab_itemid AS ab_itemid, 
+        a.charttime - b.admit_dt AS sepsis_flag
+FROM mimic2v26.microbiologyevents AS a
+JOIN mimic2v26.admissions AS b ON a.subject_id = b.subject_id
+AND a.hadm_id = b.hadm_id"
+)
+microbiology <- tbl(db, query) %>%
+    filter(hadm_id %in% ids$hadm_id) %>%
+    filter(sepsis_flag < "1 day") %>%
+    group_by(subject_id, hadm_id) %>%
+    summarise(sepsis_flag = n()) %>%
+    collect()
+```
+
+We now update our labels to reflect this exclusion. As you can see, our `cases` drop substantially. We will need to adjust this class imbalance somehow.
+
+```{r}
+ids %<>% filter(!(hadm_id %in% microbiology$hadm_id))
+table(ids$label)
+```
+
+## Feature Extraction
+
+Since we are interested in creating a classifier that can predict the onset of sepsis using accessible and available clinical data, we restrict our feature set to the `demographic`, `icustay_details`, and `chartevents` tables in the MIMIC II database.
+
+### Demographic
+
+We extract all variables from the `demographic` table, which includes items like religious affiliation, insurance information, and marriage status. From the `icustay_detail` table, we extract patient information that was recorded upon admission, such as age, admission time, weight, height, etc.
+
+```{r demographic, cache=TRUE}
+query <- sql(
+"SELECT *
+FROM mimic2v26.demographic_detail AS a
+JOIN mimic2v26.icustay_detail AS b ON a.subject_id=b.subject_id
+AND a.hadm_id=b.hadm_id"
+)
+demographic <- tbl(db, query) %>%
+    filter(icustay_id %in% ids$icustay_id) %>%
+    select(icustay_id, gender, icustay_intime, icustay_admit_age, contains("descr"), contains("first")) %>%
+    collect()
+```
+
+## Chart Events
+
+For our chart events, we discretize routine clinical measurements taken over the first 24 hours for every hour. 
+
+```{r chartevents, cache=TRUE}
+query <- sql(
+"SELECT subject_id, icustay_id, itemid, charttime, value1num 
+FROM mimic2v26.chartevents 
+WHERE itemid IN (618, 646, 677, 52, 456, 211, 20002, 1542, 677)"
+)
+
+chartevents <- tbl(db, query) %>% 
+	filter(icustay_id %in% ids$icustay_id) %>%
+    ## hour and minutes are lost if not coerced
+	mutate(timeString = as.character(charttime)) %>% 
+	select(-charttime) %>% 
+	collect() %>%
+    mutate(charttime = ymd_hms(timeString),
+           timeString = NULL) %>%
+	group_by(subject_id, icustay_id, itemid) %>%
+    ## set reference time and discretize by the hour
+	mutate(groundTime = min(charttime),
+		   intHour = as.numeric(difftime(charttime, groundTime, units="hours")), 
+		   intHourR = round(intHour)) %>%
+    group_by(subject_id, icustay_id, itemid, intHourR) %>%
+	summarize(mean = mean(value1num),
+	          min = min(value1num),
+	          max = max(value1num),
+			  std = sd(value1num)) %>%
+    ungroup()
+```
+
+Routine clinical measurements along with their respective `itemid` code are shown below:
+
+```{r}
+query <- sql(
+"SELECT itemid, label
+FROM mimic2v26.d_chartitems
+WHERE itemid IN (618, 646, 677, 52, 456, 211, 20002, 1542, 677)"
+)
+chartLabels <- tbl(db, query) %>%
+    collect()
+chartLabels
+```
+
+```{r}
+## tidy up label formatting
+chartLabels %<>%
+    mutate(label = tolower(label),
+           label = gsub(" ", "_", label))
+```
+
+```{r chartevents2, cache=TRUE}
+charteventsDiscrete <- chartevents %>%
+    join(chartLabels, by="itemid") %>%
+	filter(intHourR >=0 & intHourR <= 24) %>%
+	select(subject_id, icustay_id, label, intHourR, mean) %>%
+	melt(id.vars=c("subject_id", "icustay_id", "label", "intHourR")) %>%
+	dcast(subject_id + icustay_id ~ label + intHourR + variable, value.var="value")
+```
+
+## Feature Matrix
+
+```{r features}
+features <- join(demographic, charteventsDiscrete, by="icustay_id")
+labels <- ids[, c("icustay_id", "label")]
+# save/load features.RData
+```
+
+# Imputation of NA Values
+
+```{r}
+imputeCol <- function(col) {  # impute numeric mean & character mode
+	if (class(col)=="numeric") {
+		replace(col, which(is.na(col)), mean(col, na.rm=T))
+	}
+	else {
+		replace(col, which(is.na(col)), modeCalc(col))
+	}
+}
+
+imputeNaN <- function(col) {
+	replace(col, which(is.nan(col)), mean(col, na.rm=T))
+}
+
+modeCalc <- function(x) {  # mode function
+  ux <- unique(x)
+  return(ux[which.max(tabulate(match(x, ux)))])
+}
+
+checkNA <- function(features) {  # checks NAs
+	apply(features, 2, function(x) { length(which(is.na(x))) })
+}
+
+hotDeckImpute <- function(col) {  # impute via random sampling from each label class
+	set.seed(1)
+	if (length(col[which(!is.na(col))])!=0) {
+		replace(col, which(is.na(col)), 
+			col[which(!is.na(col))][sample(seq(length(which(!is.na(col)))), 1)])
+	}
+	else {
+		col %<>% as.data.frame %>% ungroup %>% unlist %>% as.numeric
+		replace(col, which(is.na(col)), 
+			col[which(!is.na(col))][sample(seq(length(which(!is.na(col)))), 1)])
+	}
+}
+```
+
+
+
+```{r}
+features <- join(features, labels, by="icustay_id", type="left")
+features$subject_id <- as.numeric(features$subject_id)
+
+# hot deck imputation 
+# some SOFA scores were NAs within one or both labels, prohibiting group_by, fixed by exception handling
+featuresHD <- features %>% 
+	group_by(label) %>%
+	mutate_each(., funs(hotDeckImpute)) %>% 
+	ungroup()
+featuresHD %>% checkNA
+
+# mean and mode imputation
+# subject IDs are unusable here, use icustay_id instead
+rownames(features) <- features$icustay_id
+features %<>% 
+	group_by(label) %>% 
+	mutate_each(., funs(imputeCol)) %>% 
+	ungroup() %>%
+	mutate_each(., funs(imputeNaN)) %>%
+	dplyr::select(-contains("respiratory_sofa_"), -contains("first_flg"), -icustay_intime) %>% 
+	mutate_each(funs(make.names), matches("descr|gender")) %>%
+	mutate_each(funs(as.factor), matches("descr|gender|icustay_first|label")) %>%
+	dplyr::select(-subject_id, -icustay_id) %>%
+	filter(icustay_admit_age < 200)
+features %>% checkNA
+names(features)[grep("temperature", names(features))] <- paste0("temperature", 0:24)
+str(features)		 
+```
