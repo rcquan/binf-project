@@ -16,6 +16,7 @@ library(ggplot2)
 library(caret)
 library(rpart)
 library(e1071)
+library(randomForest)
 opts_knit$set(cache.extra = rand_seed)
 ```
 
@@ -199,18 +200,6 @@ labels <- ids[, c("icustay_id", "label")]
 # Imputation of NA Values
 
 ```{r}
-# features %>% filter(!subject_id %in% controls$subject_id) %>% nrow
-# features %>% filter(subject_id %in% controls$subject_id) %>% nrow
-# cases <- features %>% filter(icustay_id %in% caseLabels) %>% nrow
-# controls <- features %>% filter(icustay_id %in% controlLabels) %>% nrow
-
-library("plyr")
-features <- join(features, labels, by="icustay_id", type="left")
-detach(package:plyr)
-features$subject_id <- as.numeric(features$subject_id)
-```
-
-```{r}
 imputeCol <- function(col) {  # impute numeric mean & character mode
 	if (class(col)=="numeric") {
 		replace(col, which(is.na(col)), mean(col, na.rm=T))
@@ -245,6 +234,13 @@ hotDeckImpute <- function(col) {  # impute via random sampling from each label c
 			col[which(!is.na(col))][sample(seq(length(which(!is.na(col)))), 1)])
 	}
 }
+```
+
+
+
+```{r}
+features <- join(features, labels, by="icustay_id", type="left")
+features$subject_id <- as.numeric(features$subject_id)
 
 # hot deck imputation 
 # some SOFA scores were NAs within one or both labels, prohibiting group_by, fixed by exception handling
@@ -256,12 +252,21 @@ featuresHD %>% checkNA
 
 # mean and mode imputation
 # subject IDs are unusable here, use icustay_id instead
+rownames(features) <- features$icustay_id
 features %<>% 
 	group_by(label) %>% 
 	mutate_each(., funs(imputeCol)) %>% 
 	ungroup() %>%
-	mutate_each(., funs(imputeNaN))
+	mutate_each(., funs(imputeNaN)) %>%
+	dplyr::select(-contains("respiratory_sofa_"), -contains("first_flg"), -icustay_intime) %>% 
+	mutate_each(funs(make.names), matches("descr|gender")) %>%
+	mutate_each(funs(as.factor), matches("descr|gender|icustay_first|label")) %>%
+	dplyr::select(-subject_id, -icustay_id) %>%
+	filter(icustay_admit_age < 200)
 features %>% checkNA
+names(features)[grep("temperature", names(features))] <- paste0("temperature", 0:24)
+str(features)		 
+
 ```
 
 # Descriptives 
@@ -299,7 +304,6 @@ catPlots
 
 numSum(features)
 numSum(featuresHD)
-
 ```
 
 # Center and Scale
@@ -311,16 +315,20 @@ centerScale <- function(dtm) {
 		cbind(., toScale)
 	return(dtm)
 }
+
+features %<>% centerScale
 ```
 
 # Training and Testing Sets
 
 ```{r}
 createTrainTest <- function(featureSet) {
-	trainIndex <- createDataPartition(featureSet$label, times=1, p=0.7)$Resample1
-	fTrain <<- featureSet[trainIndex, ]
-	fTest <<- featureSet[-trainIndex, ]
+	trainIndex <- createDataPartition(featureSet$label, times=1, p=0.7, list=FALSE)
+	return(list(featureSet[trainIndex, ], featureSet[-trainIndex, ]))
 }
+
+# training [[1]], testing [[2]]
+trainTest <- features %>% createTrainTest
 ```
 
 # Model Creation
@@ -333,6 +341,7 @@ createModels <- function(trainSet) {
 						  parms=list(split="information"))
 	nlpGiniModel <- rpart(label ~ ., trainSet, method="class", 
 						  parms=list(split="gini"))
+	nlpRandomForest <- randomForest(label ~ ., trainSet)
 	return(list(nlpLogModel, nlpNaiveBayes, nlpInfoModel, nlpGiniModel))
 }
 ```
@@ -341,25 +350,32 @@ createModels <- function(trainSet) {
 
 ```{r}
 crossValidate <- function(trainSet) {
-	tc <- trainControl("cv", 10, savePred=T, 
-					   classProbs=T, summaryFunction=twoClassSummary)  
+	tc <- trainControl("cv", 10, savePred=TRUE, classProbs=TRUE, summaryFunction=twoClassSummary)
+# 					   classProbs=TRUE, summaryFunction=twoClassSummary)  
 	
-	nlpLogModel <- train(as.factor(label) ~ ., data=trainSet, trControl=tc,  
+	logModel <- train(label ~ ., data=trainSet, trControl=tc,  
 						 method="glm", metric="ROC")  
 	
 	nbGrid <- expand.grid(.fL=0, .usekernel=F)
-	nlpNaiveBayes <- train(as.factor(label) ~ ., data=trainSet, trControl=tc, 
-						   method="nb", tuneGrid=nbGrid, metric="ROC")  
+	naiveBayes <- train(label ~ ., data=trainSet, trControl=tc, 
+						method="nb", tuneGrid=nbGrid, metric="ROC")  
 	
 	infoGrid <- expand.grid(.C=0.25)
-	nlpInfoModel <- train(as.factor(label) ~ ., data=trainSet, trControl=tc, 
-						  method="J48", tuneGrid=infoGrid, metric="ROC") 
+	infoModel <- train(label ~ ., data=trainSet, trControl=tc,
+					   method="J48", tuneGrid=infoGrid, metric="ROC") 
 	
 	rpartGrid <- expand.grid(.cp=0.2)
-	nlpGiniModel <- train(as.factor(label) ~ ., data=trainSet, trControl=tc, 
-						  method="rpart", tuneGrid=rpartGrid, metric="ROC") 
-	return(list(nlpLogModel, nlpNaiveBayes, nlpInfoModel, nlpGiniModel))
+	giniModel <- train(label ~ ., data=trainSet, trControl=tc, 
+					   method="rpart", tuneGrid=rpartGrid, metric="ROC") 
+	
+	rfGrid <- expand.grid(.mtry=c(1, 9))
+	rfModel <- train(label ~ ., data=trainSet, trControl=tc,
+					 method="rf", tuneGrid=rfGrid, metric="ROC")
+	
+	return(list(logModel, infoModel, giniModel, rfModel))
 }
+
+test <- crossValidate(trainTest[[1]])
 ```
 
 # Test Predictions
