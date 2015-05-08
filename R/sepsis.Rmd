@@ -391,4 +391,18 @@ testResults <- function(models, test, label) {
 ```
 
 
+# SIRS Classifier
+
+```{r}
+SIRS <- function(temp, hr, rr, wbc) {
+    count <- 0
+    if (temp > 38 | temp < 36) count + 1
+    if (hr > 90) count + 1
+    if (rr > 20) count + 1
+    if (wbc > 12000) count + 1
+    ifelse(count >= 2, 1, 0)
+}
+
+
+```
 
