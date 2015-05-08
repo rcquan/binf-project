@@ -77,29 +77,40 @@ createModels <- function(trainSet) {
 
 ```{r}
 crossValidate <- function(trainSet) {
-	tc <- trainControl("cv", 10, savePred=TRUE, classProbs=TRUE, summaryFunction=twoClassSummary)
-# 					   classProbs=TRUE, summaryFunction=twoClassSummary)  
+	tc <- trainControl("repeatedcv", 10, 3, 
+					   savePred=TRUE, 
+					   classProbs=TRUE, 
+					   summaryFunction=twoClassSummary)
 	
-	logModel <- train(label ~ ., data=trainSet, trControl=tc,  
-						 method="glm", metric="ROC")  
+	logModel <- train(label ~ ., data=trainSet, trControl=tc, method="glm", metric="ROC")  
 	
-	nbGrid <- expand.grid(.fL=0, .usekernel=F)
-	naiveBayes <- train(label ~ ., data=trainSet, trControl=tc, 
-						method="nb", tuneGrid=nbGrid, metric="ROC")  
+	print("Finished training logistic regression.")
+	
+	logPenalGrid <- expand.grid(.alpha=seq(0, 1, 0.1), .lambda=seq(0, 1, 0.1))
+	logPenalModel <- train(label ~ ., data=trainSet, trControl=tc,
+						   method="glmnet", tuneGrid=logPenalGrid, metric="ROC")
+	
+	print("Finished training penalized logistic regression.")
 	
 	infoGrid <- expand.grid(.C=0.25)
 	infoModel <- train(label ~ ., data=trainSet, trControl=tc,
 					   method="J48", tuneGrid=infoGrid, metric="ROC") 
 	
+	print("Finished training decision trees (infoGain).")
+	
 	rpartGrid <- expand.grid(.cp=0.2)
 	giniModel <- train(label ~ ., data=trainSet, trControl=tc, 
 					   method="rpart", tuneGrid=rpartGrid, metric="ROC") 
+	
+	print("Finished training decision trees (gini).")
 	
 	rfGrid <- expand.grid(.mtry=c(1, 9))
 	rfModel <- train(label ~ ., data=trainSet, trControl=tc,
 					 method="rf", tuneGrid=rfGrid, metric="ROC")
 	
-	return(list(logModel, infoModel, giniModel, rfModel))
+	print("Finished training random forest decision trees.")
+	
+	return(list(logModel, logPenalModel, infoModel, giniModel, rfModel))
 }
 
 test <- crossValidate(trainTest[[1]])

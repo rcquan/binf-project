@@ -57,7 +57,6 @@ The first set of features includes clinical history consisting of information av
 * medical history (SOFA score, SAPS-I score)
 * basic health data (height, weight, etc.)
 
-
 ## Physiological Data
 
 The second set of features include non-invasive measurements of physiological variables:
@@ -86,7 +85,11 @@ We have yet to determine which of these (if any) will be included in our feature
 
 ## Pre-Processing
 
-We will standardize continuous clinical measures so they have a mean of 0 and a standard deviation of 1. Values falling outside the range will allow us to determine outliers and impossible values. Upon standardization, we will then compute summary statistics to capture the centrality and dispersion of clinical measures.
+Subsequent tables from the MIMIC II database were linked through a combination of the ICU stay IDs, subject IDs, and chart item IDs (for features). Routine clinical features were then discretized by time cutoffs, melted, and casted in order to create each hour time point as a feature in itself. 
+
+Missing values were subsequently identified and imputed according to two methods. The first method was mean and mode imputation; for numeric values that were missing, the mean by case/control was imputed for the missing value. For categorical/character vectors, the most frequent value was imputed by case/control. Hot deck imputation was also performed, where random samples by case/control were sampled for NA replacement. 
+
+Standardization of continuous clinical measures was performed on numeric features in order to establish comparability (mean of 0 and a standard deviation of 1). Values falling outside the range will allow us to determine outliers and impossible values. Upon standardization, summary statistics were computed to capture the centrality and dispersion of clinical measures.
 
 Upon preliminary inspection, we discovered that missing values comprise only a small fraction of all observations. However, simply excluding patients without the full feature matrix will lead to large reductions in the size of our dataset and potentially introduce bias into our models. As such, we will use a simple imputation approach in which mean feature values are derived from the patients’ gender and age group.
 
@@ -117,13 +120,16 @@ SELECT count(DISTINCT subject_id) AS sample_size
 
 As this is a supervised classification problem, we have elected to use the following models to predict the onset of sepsis within the ICU:
 
-* Regularized/Non-Regularized Logistic Regression
-* Naive Bayes
+* Non-Regularized Logistic Regression
+* Regularized Logistic Regression
+* Decision Trees
 * Random Forests
 
-We chose these classifiers as a means of comparison, in order to witness potential trade-offs in performance versus interpretability.
+We chose these classifiers as a means of comparison, in order to witness potential trade-offs in performance versus interpretability. Decision trees, while highly interpretable, have a higher tendency to overfit, as multiple categorical variables, such as ethnicity, were highly granular.
 
-We will use 10-fold cross validation to select the best parameters. 
+Is there a reason that Naive Bayes was left out? Lots of collinearity?
+
+We will use 10-fold cross validation to select the best parameters, and to estimate model prediction accuracy, recall, precision, and AUC calculations.  
 
 ### Model Assessment
 
