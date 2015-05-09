@@ -9,6 +9,7 @@ output: html_document
 library(plyr)
 library(dplyr)
 library(reshape2)
+library(stringr)
 library(magrittr)
 library(lubridate)
 library(knitr)
@@ -128,6 +129,31 @@ demographic <- tbl(db, query) %>%
     collect()
 ```
 
+```{r}
+demographic %<>%
+    select(-hospital_first_flg, -icustay_first_flg) %>%
+    filter(icustay_admit_age < 120) %>%
+    mutate(icustay_intime = ifelse(hour(icustay_intime) %in% seq(6, 11), "morning",
+                            ifelse(hour(icustay_intime) %in% seq(12, 5), "afternoon",
+                            ifelse(hour(icustay_intime) %in% seq(6, 11), "evening", "night")))) 
+
+collapseRace <- function(race) {
+    if (str_detect(race, "white")) return("white")
+    else if (str_detect(race, "black")) return("black")
+    else if (str_detect(race, "asian")) return("asian")
+    else if (str_detect(race, "hispanic")) return("hispanic")
+    else if (str_detect(race, "unable") | str_detect(race, "unknown")) return("unknown")
+    else return("other")
+}
+
+demographic$ethnicity_descr <- sapply(tolower(demographic$ethnicity_descr), 
+                                      collapseRace, 
+                                      USE.NAMES=FALSE)
+
+```
+
+
+
 ## Chart Events
 
 For our chart events, we discretize routine clinical measurements taken over the first 24 hours for every hour. 
@@ -153,10 +179,7 @@ chartevents <- tbl(db, query) %>%
 		   intHour = as.numeric(difftime(charttime, groundTime, units="hours")), 
 		   intHourR = round(intHour)) %>%
     group_by(subject_id, icustay_id, itemid, intHourR) %>%
-	summarize(mean = mean(value1num),
-	          min = min(value1num),
-	          max = max(value1num),
-			  std = sd(value1num)) %>%
+	summarize(value = mean(value1num)) %>%
     ungroup()
 ```
 
@@ -177,32 +200,74 @@ chartLabels
 ## tidy up label formatting
 chartLabels %<>%
     mutate(label = tolower(label),
-           label = gsub(" ", "_", label))
+           label = gsub(" ", "_", label),
+           label = ifelse(label == "temperature_c_(calc)", "temperature", label)) %>%
+    filter(!(label %in% c("respiratory_sofa_score", "arterial_bp_mean")))
+charteventsDiscrete <- chartevents %>%
+    join(chartLabels, by="itemid", type="inner")
 ```
 
 ```{r chartevents2, cache=TRUE}
-charteventsDiscrete <- chartevents %>%
-    join(chartLabels, by="itemid") %>%
-	filter(intHourR >=0 & intHourR <= 24) %>%
-	select(subject_id, icustay_id, label, intHourR, mean) %>%
-	melt(id.vars=c("subject_id", "icustay_id", "label", "intHourR")) %>%
-	dcast(subject_id + icustay_id ~ label + intHourR + variable, value.var="value")
+summarizeByHour <- function(features, hour) {
+    summarizedFeatures <- features %>%
+        select(icustay_id, label, intHourR, value) %>%
+        filter(intHourR >= 0 & intHourR <= hour) %>%
+        group_by(icustay_id, label) %>%
+        summarize(mean = mean(value, na.rm=TRUE),
+                  min = min(value, na.rm=TRUE),
+                  max = max(value, na.rm=TRUE),
+                  std = sd(value, na.rm=TRUE)) %>%
+        melt(id.vars=c("icustay_id", "label")) %>%
+        dcast(icustay_id ~ label + variable, value.var="value")
+    return(summarizedFeatures)
+}
+hours <- c(1, 3, 6, 12, 24)
+featuresList <- lapply(hours, function(hour) {
+    summarizeByHour(charteventsDiscrete, hour=hour)
+    })
 ```
 
 ## Feature Matrix
 
 ```{r features}
-features <- join(demographic, charteventsDiscrete, by="icustay_id")
-labels <- ids[, c("icustay_id", "label")]
-# save/load features.RData
+featuresList <- lapply(featuresList, join, demographic, by="icustay_id")
+featuresList <- lapply(featuresList, join, ids[, c("icustay_id", "label")])
 ```
+
+
+```{r}
+features <- featuresList[[3]]
+row.names(features) <- features$icustay_id
+features <- features[ , -grep("icustay_id", names(features))]
+continuousVars <- names(which(sapply(features, is.numeric)))
+categoricalVars <- names(features)[!(names(features) %in% continuousVars)]
+
+set.seed(1)
+inTrain <- createDataPartition(features$label, times=1, p=0.7, list=FALSE)
+training <- features[inTrain, ]
+testing <- features[-inTrain, ]
+
+
+preProcessed <- preProcess(training[, continuousVars],
+                           method=c("center", "scale", "medianImpute"),
+                           na.remove=FALSE)
+what <- predict(preProcessed, training[, continuousVars])   
+nrow(what)
+
+what
+
+shit <- predict(preProcessed, training)
+
+```
+
+
 
 # Imputation of NA Values
 
-```{r}
+```{r imputation1}
 imputeCol <- function(col) {  # impute numeric mean & character mode
 	if (class(col)=="numeric") {
-		replace(col, which(is.na(col)), mean(col, na.rm=T))
+		replace(col, which(is.na(col)), mean(col, na.rm=TRUE))
 	}
 	else {
 		replace(col, which(is.na(col)), modeCalc(col))
@@ -210,7 +275,7 @@ imputeCol <- function(col) {  # impute numeric mean & character mode
 }
 
 imputeNaN <- function(col) {
-	replace(col, which(is.nan(col)), mean(col, na.rm=T))
+	replace(col, which(is.nan(col)), mean(col, na.rm=TRUE))
 }
 
 modeCalc <- function(x) {  # mode function
@@ -238,10 +303,7 @@ hotDeckImpute <- function(col) {  # impute via random sampling from each label c
 
 
 
-```{r}
-features <- join(features, labels, by="icustay_id", type="left")
-features$subject_id <- as.numeric(features$subject_id)
-
+```{r imputation2}
 # hot deck imputation 
 # some SOFA scores were NAs within one or both labels, prohibiting group_by, fixed by exception handling
 featuresHD <- features %>% 
@@ -249,6 +311,9 @@ featuresHD <- features %>%
 	mutate_each(., funs(hotDeckImpute)) %>% 
 	ungroup()
 featuresHD %>% checkNA
+```
+
+```{r}
 
 # mean and mode imputation
 # subject IDs are unusable here, use icustay_id instead
@@ -258,13 +323,15 @@ features %<>%
 	mutate_each(., funs(imputeCol)) %>% 
 	ungroup() %>%
 	mutate_each(., funs(imputeNaN)) %>%
-	dplyr::select(-contains("respiratory_sofa_"), -contains("first_flg"), -icustay_intime) %>% 
+    ## create valid level names
 	mutate_each(funs(make.names), matches("descr|gender")) %>%
-	mutate_each(funs(as.factor), matches("descr|gender|icustay_first|label")) %>%
+	mutate_each(funs(as.factor), matches("descr|gender|icustay_first|icustay_intime|label")) %>%
 	dplyr::select(-subject_id, -icustay_id) %>%
 	filter(icustay_admit_age < 200)
+
 features %>% checkNA
-names(features)[grep("temperature", names(features))] <- paste0("temperature", 0:24)
+
+
 str(features)		 
 ```
 
