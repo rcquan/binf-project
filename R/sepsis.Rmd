@@ -2,30 +2,63 @@
 title: "Predicting Sepsis in the ICU"
 author: Ryan Quan and Frank Chen
 date: "April 30, 2015"
+bibliography: "../docs/references/binf-project.bib"
+csl: "../docs/references/csl/bmj.csl"
 output: html_document
 ---
 
-```{r, message=FALSE}
-library(plyr)
-library(dplyr)
+```{r dependencies, message=FALSE, echo=FALSE, warning=FALSE}
+# devtools::install_github("cboettig/knitcitations")
+library(knitcitations)
+library(knitr)
+library(Hmisc)
 library(reshape2)
 library(stringr)
 library(magrittr)
 library(lubridate)
-library(knitr)
 library(ggplot2)
 library(caret)
-library(rpart)
-library(e1071)
-library(randomForest)
-opts_knit$set(cache.extra = rand_seed)
+library(ROCR)
+library(plyr)
+library(dplyr)
 ```
 
-# Methods
+```{r global_options, include=FALSE}
+cleanbib()
+options("citation_format"="pandoc")
+opts_knit$set(cache.extra=rand_seed, message=FALSE, warning=FALSE, echo=FALSE)
+```
 
-## Data Source
+# Research Question
 
-```{r, message=FALSE}
+This study will focus on developing a prediction model for the onset of sepsis in the ICU using clinical history, demographic information, and non-invasive physiological data obtained within the first hours following ICU admission. Using a large dataset of patients, routine clinical measurements obtained during initial stages of care, imputation techniques, and data mining methodologies, the goal will not only be to build a classifier that surpasses the performance of current sepsis models, but also to provide a potential early warning sysetem for sepsis in the general clinical care setting.
+
+# Introduction
+
+Sepsis is systemic inflammatory response syndrome (SIRS), secondary to a documented infection. Sepsis can present itself on a continuum that ranges from sepsis, severe sepsis, and septic shock, resulting in multiple organ dysfunction. The symptoms of sepsis are often non-specific and involve difficulty breathing, hypoxemia, hypoperfusion, and hypotension [@Levy2003IntensiveCareMed]. 
+
+Although sepsis is a common condition worldwide, the current understanding of the pathophysiology of sepsis has increased substantially, and sepsis mortality has declined in the last two decades [@Stevenson2014CritCareMed]. The reason for the decline may be attributed to improved supportive care and the inherent symptomatology of patients who fall prey to sepsis. On the contrary, epidemiologic data suggests that sepsis incidence is increasing [@Stevenson2014CritCareMed]. New treatments and therapies have failed to demonstrate efficacy. Sepsis affects approximately 700,000 people per year, and accounts for approximately 200,000 deaths per year in the United States [@Hartog2009IntensiveCareMed], amassing an annual cost of 16.7 billion dollars [@Carrigan2004ClinChem].
+
+The best form of treatment is preventive treatment. Early diagnosis and appropriate therapy must be typically be delivered before laboratory test results are known, which bases the diagnosis on the co-presence of routine clinical measures. The SIRS criteria was developed in the 1991 International Sepsis Definition Conference to address these concerns and is still commonly used in the clinical care setting to flag patients for risk of sepsis [@Levy2003IntensiveCareMed]. Patients who meet the SIRS criteria exhibit two or more of the following symptoms:
+
+* Temperature > 38 degrees Celsius or < than 36 degrees Celsius
+* Heart Rate > 90 bpm
+* Respiratory Rate > than 20 or PaCO2 < 32 mm Hg
+* White Blood Cell Count > 12,000/mm^3, < 4,000/mm^3, or > 10% bands
+
+Unfortunately, the SIRS criteria has low discriminatory power in the intensive care unit as many critically ill patients who are not at risk for sepsis may also exhibit similar symptoms [@Martin2012ExpertRevAntiInfectTher]. Previous studies demonstrated the poor utility of the SIRS criteria in identifying septic patients within a clinical care setting, in which SIRS exhibited both low sensitivity and specificity [@Jaimes2003IntensiveCareMed]. In the case of identifying patients at risk for sepsis, a test with poor sensitivity can be particularly harmful as false negatives may not receive the proper prophylactic care needed to prevent sepsis-related complications. As such, a high-recall prediction model (low false negatives) to identify patients with sepsis may provide benefits to caregivers in the form of an early warning system.
+
+While previous studies have largely focused on predicting septic shock [@Ho2014ACMTransManageInfSyst], few studies have focused on predicting earlier stages of the sepsis continuum. Multivariate logistic regression (Shavdia, 2007), decision trees [@Thiel2010JHospMed], and Dynamic Bayesian Networks [@Gultepe2014JAmMedInformAssoc] approaches have been used to predict sepsis in the intensive care unit. However, these studies tended to use a large number of invasive measurements - such as arterial blood pressure - in their feature set, reducing generalizability. Moreover, while other studies looked at the last measurements taken before the onset of sepsis [@Tang2010PhysiolMeas], few models incorporated summary statistics (mean/sd or other pairs) of clinical features in the feature set to capture the centrality and dispersion of these measurements over time. Our study attempts to synthesize and add to previous approaches by applying: a) "modern" classification methods (naive bayes, regularized logistic regression, and random forest) to potentially improve model performance, b) summary statistics to routine, non-invasive clinical features to capture information from time-series data, and c) imputation methods to avoid pitfalls due to missing data.
+
+# Materials and Methods
+
+## Dataset
+
+The data was obtained from the Multiparameter Intelligent Monitoring in Intensive Care Database (MIMIC II), a semi-public database which presents ICU patient records for approximately 25,000 adults at Boston's Beth Israel Deaconess Medical Center. As a large, diverse dataset of ICU patients, MIMIC II is appropriate for building prediction models for critically ill patient populations.
+
+Data for the analysis was sourced from a MIMIC II database instance running the PostgreSQL (version 9.2.10) engine. The package `RPostgreSQL` provided a Database Interface (DBI) compliant driver for R to access the PostgreSQL database system.
+
+```{r database_connection, message=FALSE, echo=TRUE}
 # devtools::add_path('~/usr/local/bin/psql')
 # devtools::install("~/Downloads/rpostgresql-read-only/RPostgreSQL/")
 db <- src_postgres(dbname = "MIMIC2",
@@ -35,13 +68,11 @@ db <- src_postgres(dbname = "MIMIC2",
                   password = "thisisalongpassword1234")
 ```
 
-## Population
+## Patient Selection
 
-Since our objective is to train a prediction model that will detect the onset of sepsis within the first few hours of admittance to the ICU, we exclude patients who were not admitted to the ICU for the first sequence of their hospital visit. This is denoted by the column `icustay_first_flg`. Moreover, we restrict our analysis to the adult age group, which is defined as patients greater than or equal to 15 years of age. 
+This study examined adults ($\geq$ 16 years of age). Since our objective is to train a prediction model that will detect the onset of sepsis within the first few hours of admittance to the ICU, we included only patients who were admitted to the ICU for the first sequence of their hospital visit. To avoid bias introduced by censorship, we excluded samples who have not been in the ICU for longer than 24 hours, as patients will not have accrued enough data to make a risk assessment. 
 
-## Outcomes
-
-To define positive cases of sepsis, we lumped ICD-9 codes for `sepsis`, `severe sepsis`, and `septic shock`, as these are all part of the "sepsis continuum". 
+The outcome measure for this study was any instance of sepsis on the "sepsis continuum" - sepsis (995.91), severe sepsis (995.92), or septic shock (785.52) - as defined by International Classification of Diseases, 9th revision (ICD9). Severity of sepsis was not graded in this study, and thus any patient with sepsis-related ICD-9 codes was determined to have the same level of risk.
 
 ```{r caseid, cache=TRUE}
 query <- sql(
@@ -58,7 +89,7 @@ caseID <- tbl(db, query) %>%
     mutate(label = "case")
 ```
 
-For our controls, we randomly sampled 5000 patients from the MIMIC II database who meet the same exclusionary criteria.
+For our negative controls, we randomly sampled 5000 patients from the MIMIC II database who met the same exclusionary criteria.
 
 ```{r controlid, cache=TRUE}
 query <- sql(
@@ -72,9 +103,7 @@ controlID <- tbl(db, query) %>%
     mutate(label = "control")
 ```
 
-With this, we now create a data frame that contains the labels and unique identifiers for our training set.
-
-```{r, cache=TRUE}
+```{r random_subset, cache=TRUE}
 set.seed(1)
 randomSubset <- sample(controlID$subject_id, 5000)
 controls <- controlID[controlID$subject_id %in% randomSubset, ]
@@ -83,7 +112,7 @@ ids <- rbind(caseID, controls)
 
 ## Confounding Medical Interventions
 
-Since our objective is to predict the onset of sepsis, we must also exclude patients who received antibiotics upon admission into the ICU. If a patient received any antibiotics within the first 24 hours, he or she was dropped from the training set. Doing so will allow us to avoid bias introduced via confounding medical interventions.
+The "ground truth" outcome for a patient is obscured by confounding medical interventions [@Paxton2013AMIAAnnuSympProc]. For example, we cannot determine the true sepsis risk for patients who receive antibiotics upon admission into the ICU because the treatment masks the "ground truth" - we don't know whether the physician was right or wrong his risk assessment of the patient. To avoid bias introduced by these so-called confounding medical interventions, patients who have undergone treatment with antibiotics within the first 24 hours will also be excluded. 
 
 ```{r microbiology, cache=TRUE}
 query <- sql(
@@ -101,16 +130,17 @@ microbiology <- tbl(db, query) %>%
     collect()
 ```
 
-We now update our labels to reflect this exclusion. As you can see, our `cases` drop substantially. We will need to adjust this class imbalance somehow.
-
-```{r}
+```{r microbiology_exclusion}
 ids %<>% filter(!(hadm_id %in% microbiology$hadm_id))
-table(ids$label)
 ```
 
-## Feature Extraction
+## Feature Selection
 
-Since we are interested in creating a classifier that can predict the onset of sepsis using accessible and available clinical data, we restrict our feature set to the `demographic`, `icustay_details`, and `chartevents` tables in the MIMIC II database.
+Since we are interested in creating a classifier that can predict the onset of sepsis using accessible clinical data available within the first few hours since admission, we restrict our feature set to the `demographic`, `icustay_details`, and `chartevents` tables in the MIMIC II database, which includes:
+
+* demographic data (gender, age, etc.)
+* chart events (SOFA score, SAPS-I score)
+* basic health data (height, weight, etc.)
 
 ### Demographic
 
@@ -129,14 +159,9 @@ demographic <- tbl(db, query) %>%
     collect()
 ```
 
-```{r}
-demographic %<>%
-    dplyr::select(-hospital_first_flg, -icustay_first_flg) %>%
-    filter(icustay_admit_age < 120) %>%
-    mutate(icustay_intime = ifelse(hour(icustay_intime) %in% seq(6, 11), "morning",
-                            ifelse(hour(icustay_intime) %in% seq(12, 5), "afternoon",
-                            ifelse(hour(icustay_intime) %in% seq(6, 11), "evening", "night"))))
+To avoid the pitfalls of categorical features with zero variance, we collapsed classes into a smaller number of sensible categories. To deal timestamps, we factorized time into "morning", "afternoon", "evening", and "night" levels.
 
+```{r}
 collapseRace <- function(race) {
     if (str_detect(race, "white")) return("white")
     else if (str_detect(race, "black")) return("black")
@@ -154,24 +179,34 @@ collapseReligion <- function(religion) {
     else {return("protestant")}
 }
 
+demographic %<>%
+    ## remove classes with zero variance
+    dplyr::select(-hospital_first_flg, -icustay_first_flg) %>%
+    ## sanity check for age
+    filter(icustay_admit_age < 120) %>%
+    ## factorize time
+    mutate(icustay_intime = ifelse(hour(icustay_intime) %in% seq(6, 11), "morning",
+                            ifelse(hour(icustay_intime) %in% seq(12, 17), "afternoon",
+                            ifelse(hour(icustay_intime) %in% seq(18, 23), "evening", "night"))))
+## missing demographic information should not be imputed
 demographic <- demographic[complete.cases(demographic), ]
+## collapse marital status levels
 demographic <- demographic[-grep("UNKNOWN", demographic$marital_status_descr), ]
 demographic$marital_status_descr <- ifelse(demographic$marital_status_descr == "SEPARATED",
                                            "divorced", tolower(demographic$marital_status_descr))
-
+## collapse race levels
 demographic$ethnicity_descr <- sapply(tolower(demographic$ethnicity_descr), 
                                       collapseRace, 
                                       USE.NAMES=FALSE)
+## collapse religion levels
 demographic$religion_descr <- sapply(tolower(demographic$religion_descr), 
                                       collapseReligion, 
                                       USE.NAMES=FALSE)
 ```
 
+### Chart Events
 
-
-## Chart Events
-
-For our chart events, we discretize routine clinical measurements taken over the first 24 hours for every hour. 
+We determined "routine clinical measurements" to be variables in which over 80% of our population had at least 1 clinical measurement recorded on a per hourly basis during the first 24 hours. Not surprisingly, these variables were `respiratory rate`, `pulse oximetry`, `heart rate`, `non-invasive blood pressure`, `white blood cell count`, `sofa score`, `sapsi score`, and `temperature`. 
 
 ```{r chartevents, cache=TRUE}
 query <- sql(
@@ -198,9 +233,7 @@ chartevents <- tbl(db, query) %>%
     ungroup()
 ```
 
-Routine clinical measurements along with their respective `itemid` code are shown below:
-
-```{r}
+```{r chartlabels}
 query <- sql(
 "SELECT itemid, label
 FROM mimic2v26.d_chartitems
@@ -208,19 +241,21 @@ WHERE itemid IN (618, 646, 677, 52, 456, 211, 20002, 1542, 677)"
 )
 chartLabels <- tbl(db, query) %>%
     collect()
-chartLabels
 ```
 
 ```{r}
-## tidy up label formatting
 chartLabels %<>%
+    ## clean up formatting of labels
     mutate(label = tolower(label),
            label = gsub(" ", "_", label),
            label = ifelse(label == "temperature_c_(calc)", "temperature", label)) %>%
+    ## empty variables
     filter(!(label %in% c("respiratory_sofa_score", "arterial_bp_mean")))
 charteventsDiscrete <- chartevents %>%
     join(chartLabels, by="itemid", type="inner")
 ```
+
+Subsequent tables from the MIMIC II database were linked through a combination of the ICU stay IDs, subject IDs, and chart item IDs (for features). Routine clinical features were then discretized by time cutoffs, melted, and casted in order to create each hour time point as a feature in itself. To evaluate the performance of our prediction models with respect to time, we then created summary statistics (mean, min, max, sd) for each clinical feature using data aggregated at 1 hour, 3 hours, 6 hours, 12 hours, and 24 hours.
 
 ```{r chartevents2, cache=TRUE}
 summarizeByHour <- function(features, hour) {
@@ -228,7 +263,7 @@ summarizeByHour <- function(features, hour) {
         dplyr::select(icustay_id, label, intHourR, value) %>%
         filter(intHourR >= 0 & intHourR <= hour) %>%
         group_by(icustay_id, label) %>%
-        summarize(mean = mean(value, na.rm=TRUE),
+        dplyr::summarize(mean = mean(value, na.rm=TRUE),
                   min = min(value, na.rm=TRUE),
                   max = max(value, na.rm=TRUE),
                   std = sd(value, na.rm=TRUE)) %>%
@@ -243,47 +278,70 @@ featuresList <- lapply(hours, function(hour) {
     })
 ```
 
-## Feature Matrix
+# Statistical Analysis
 
-```{r features}
+Following data extraction, 38 features were available for predictive analysis. 
+
+Missing values were subsequently identified and imputed using kNN imputation with $k=10$. Standardization of continuous clinical measures was performed on numeric features in order to establish comparability (mean of 0 and a standard deviation of 1). Values falling outside the range will allow us to determine outliers and impossible values.
+
+Six models were then selected for prediction of sepsis: logistic regression, regularized logistic regression, naïve Bayes, and C4.5-like decision trees (information gain), recursive partitioning trees (gini impurity), and random forest. Examiniation for collinearity was peformed using linear correlations, resulting in 27 features. The remaining models were conducted on the full set of 39 features. All methodologies were evaluated using repeated 10-fold cross validation to obtain 30 resamples with results represented using area under the receiver operating characteristic curves (AUROC).
+
+```{r preprocessing}
+preProcessFeatures <- function(features) {
+    ## remove id and replace as index
+    row.names(features) <- features$icustay_id
+    features <- features[ , -grep("icustay_id", names(features))]
+    ## split into training/testing
+    set.seed(1)
+    inTrain <- createDataPartition(features$label, times=1, p=0.7, list=FALSE)
+    trainingUnscaled <- features[inTrain, ]
+    testingUnscaled <- features[-inTrain, ]
+    ## split into continous/categorical for preprocessing
+    continuousVars <- names(which(sapply(features, is.numeric)))
+    categoricalVars <- names(features)[!(names(features) %in% continuousVars)]
+    ## fit preprocessing method on training, then apply to testing
+    preProcessed <- preProcess(trainingUnscaled[, continuousVars],
+                               method=c("center", "scale", "knnImpute"),
+                               na.remove=TRUE,
+                               k=10)
+    continuousTrain <- predict(preProcessed, trainingUnscaled[, continuousVars])   
+    continuousTest <- predict(preProcessed, testingUnscaled[, continuousVars])
+    ## convert character into factors
+    categoricalTrain <- sapply(trainingUnscaled[, categoricalVars], as.factor)
+    categoricalTest <- sapply(testingUnscaled[, categoricalVars], as.factor)
+    ## recombine final training/testing sets
+    training <- cbind(continuousTrain, categoricalTrain)
+    testing <- cbind(continuousTest, categoricalTest)
+    ## remove highly correlated variables for logistic regression
+    sepsisCor <- cor(continuousTrain)
+    highlyCor <- findCorrelation(sepsisCor, cutoff=0.75)
+    logRegTrain <- cbind(continuousTrain[, -highlyCor], categoricalTrain)
+    logRegTest <- cbind(continuousTest[, -highlyCor], categoricalTest)
+    
+    return(list(training=training, 
+                testing=testing, 
+                testingUnscaled=testingUnscaled,
+                logRegTrain=logRegTrain, 
+                logRegTest=logRegTest))
+}
 featuresList <- lapply(featuresList, join, demographic, by="icustay_id", type="right")
 featuresList <- lapply(featuresList, join, ids[, c("icustay_id", "label")])
+## save for table1
+descriptives <- featuresList[[5]]
+featuresList <- lapply(featuresList, preProcessFeatures)
 ```
 
+# Results
+
+A total of 2,783 patients were used for analysis, representing 2,783 unique ICU admissions. Among the cohort, 17.8% developed some form of sepis during their ICU stay.
+
+## Table 1: Descriptive Statistics
 
 ```{r}
-features <- featuresList[[3]]
-row.names(features) <- features$icustay_id
-features <- features[ , -grep("icustay_id", names(features))]
-continuousVars <- names(which(sapply(features, is.numeric)))
-categoricalVars <- names(features)[!(names(features) %in% continuousVars)]
-
-set.seed(1)
-inTrain <- createDataPartition(features$label, times=1, p=0.7, list=FALSE)
-training1 <- features[inTrain, ]
-testing1 <- features[-inTrain, ]
-
-
-preProcessed <- preProcess(training1[, continuousVars],
-                           method=c("center", "scale", "knnImpute"),
-                           na.remove=TRUE,
-                           k=10)
-categoricalTrain <- sapply(training1[, categoricalVars], as.factor)
-categoricalTest <- sapply(testing1[, categoricalVars], as.factor)
-
-continuousTrain <- predict(preProcessed, training1[, continuousVars])   
-continuousTest <- predict(preProcessed, testing1[, continuousVars])
-
-training <- cbind(continuousTrain, categoricalTrain)
-testing <- cbind(continuousTest, categoricalTest)
-
-training %>% checkNA()
-testing %>% checkNA()
+describe(descriptives, digits=3, spacing=0)
 ```
 
-# Descriptives 
-
-```{r}
+```{r exploratory_plots, eval=FALSE}
 numSum <- function(featureSet) {
 	featureSet %>% 
 		group_by(label) %>%
@@ -313,17 +371,19 @@ catVars <- as.list(colnames(features)[c(2, 5:14)])
 catStats <- lapply(catVars, catSum, featureSet=features)
 catPlots <- lapply(catStats[c(1:7, 10:11)], loopDescrPlot)
 catPlots
-
 numSum(features)
-numSum(featuresHD)
 ```
 
-# Cross Validation
+## Cross Validation
 
 ```{r}
-library(doMC)
-registerDoMC(cores=2)
-fitModel <- function(training) {
+fitModels <- function(features) {
+    library(doMC)
+    registerDoMC(cores=2)
+    
+    training <- features$training
+    logRegTrain <- features$logRegTrain
+    
 	tc <- trainControl("repeatedcv", 
 	                   number=10, 
 	                   repeats=3,
@@ -338,10 +398,8 @@ fitModel <- function(training) {
 	                   summaryFunction=twoClassSummary,
 	                   allowParallel=FALSE)
 	
-	SIRS()
-	
 	logModel <- train(label ~ ., 
-	                  data=training, 
+	                  data=logRegTrain, 
 	                  trControl=tc,  
 	                  method="glm", 
 	                  metric="ROC", 
@@ -386,17 +444,32 @@ fitModel <- function(training) {
 	                 trControl=tc,
 					 method="rf", 
 					 metric="ROC",
-					 tuneLength=5)
+					 tuneLength=3)
 	message("Finished fitting Random Forest.")
+	
 	return(list(logModel, regLogModel, nbModel, giniModel, infoModel, rfModel))
 }
-
-modelList <- fitModel(training)
+modelList <- lapply(featuresList, fitModels)
 ```
 
 ```{r}
-finalModel <- regLogModel
-probsInfo <- predict(finalModel, testing[, names(testing) != "label"], type="prob")
+res <- resamples(modelList)
+summary(res)
+dotplot(res)
+```
+
+
+```{r}
+library(ROCR)
+probsInfo <- predict(modelList$randomForest, testing, type="prob")
+pred <- prediction(1-probsInfo$case, testing$label)
+perf <- performance(pred, "tpr", "fpr")
+plot(perf, colorize=TRUE)
+```
+
+```{r}
+finalModel <- 
+probsInfo <- predict(finalModel, testing, type="prob")
 rocCurve <- roc(response=testing$label,
                 predictor=probsInfo[, "case"],
                 levels=rev(levels(testing$label)))
@@ -406,39 +479,10 @@ plot(rocCurve, print.thres=c(.5, .2), type="S", legacy.axes = TRUE)
 
 # Test Predictions
 
-```{r}
-testResults <- function(models, test, label) {
-	
-	logitPred <- predict(models[[1]], test, link="class") %>% as.data.frame 
-	logitPred <- ifelse(logitPred>0, 1, 0) %>% as.numeric
-	logitConMat <- table(logitPred, label) %>% reportStat
-	
-	nbPred <- predict(models[[2]], test, type="raw") %>% 
-		as.data.frame %>% mutate(predLabel=ifelse(`0`>`1`, 0, 1)) %>% 
-		dplyr::select(predLabel) %>% unlist %>% as.numeric
-	nbConMat <- table(nbPred, label) %>% reportStat
-	
-	treeInfoPred <- predict(models[[3]], test, link="class") %>% 
-		as.data.frame %>% mutate(predLabel=ifelse(`0`>`1`, 0, 1)) %>% 
-		dplyr::select(predLabel) %>% unlist %>% as.numeric
-	treeInfoConMat <- table(treeInfoPred, label) %>% reportStat
-	
-	treeGiniPred <- predict(models[[4]], test, link="class") %>% 
-		as.data.frame %>% mutate(predLabel=ifelse(`0`>`1`, 0, 1)) %>% 
-		dplyr::select(predLabel) %>% unlist %>% as.numeric
-	treeGiniConMat <- table(treeGiniPred, label) %>% reportStat
-	return(list(logistic=logitConMat, naiveBayes=nbConMat, 
-				infoTree=treeInfoConMat, giniTree=treeGiniConMat))
-}
-```
-
-
-# SIRS Classifier
-
-```{r}
-
+```{r baseline}
 SIRS <- function(temp, hr, rr, wbc) {
     count <- 0
+    ## better safe than sorry
     if (is.na(temp) | is.na(hr) | is.na(rr) | is.na(wbc)) return("case")
     if (temp > 38 | temp < 36) count <- count + 1
     if (hr > 90) count <- count + 1
@@ -447,14 +491,23 @@ SIRS <- function(temp, hr, rr, wbc) {
     return(ifelse(count >= 2, "case", "control"))
 }
 
-
-pred <- sapply(1:nrow(testing1), function(i) {
+baselinePred <- sapply(1:nrow(testing1), function(i) {
     SIRS(testing1$temperature_mean[i], testing1$heart_rate_mean[i], testing1$respiratory_rate_mean[i], testing1$wbc_mean[i])
     })
 
-confusionMatrix(pred, testing1$label)
+confusionMatrix(baselinePred, testing1$label)
 confusionMatrix(rep("control", nrow(testing1)), testing1$label)
+
+```
+
+
+# SIRS Classifier
+
+```{r}
+
 
 
 ```
+
+
 
