@@ -131,5 +131,3 @@ Since our goal is to detect early onset of sepsis, we ideally want our model to 
 
 We will be using the `glmnet`, `e1071`, `svm` `randomForest`, and `caret` packages from CRAN for model training, testing, and validation.
 
-## References
-
