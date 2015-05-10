@@ -1,10 +1,10 @@
 ---
 title: "Predicting Sepsis in the ICU"
-author: Ryan Quan and Frank Chen
-date: "April 30, 2015"
-bibliography: "../docs/references/binf-project.bib"
-csl: "../docs/references/csl/bmj.csl"
-output: html_document
+author: "Ryan Quan and Frank Chen"
+date: "May 11, 2015"
+output: pdf_document
+csl: ../docs/references/csl/bmj.csl
+bibliography: ../docs/references/binf-project.bib
 ---
 
 ```{r dependencies, message=FALSE, echo=FALSE, warning=FALSE}
@@ -17,6 +17,7 @@ library(stringr)
 library(magrittr)
 library(lubridate)
 library(ggplot2)
+library(RColorBrewer)
 library(caret)
 library(ROCR)
 library(plyr)
@@ -26,7 +27,8 @@ library(dplyr)
 ```{r global_options, include=FALSE}
 cleanbib()
 options("citation_format"="pandoc")
-opts_knit$set(cache.extra=rand_seed, message=FALSE, warning=FALSE, echo=FALSE)
+opts_knit$set(cache.extra=rand_seed)
+opts_chunk$set(message=FALSE, warning=FALSE, echo=FALSE, cache=TRUE)
 ```
 
 # Research Question
@@ -58,7 +60,7 @@ The data was obtained from the Multiparameter Intelligent Monitoring in Intensiv
 
 Data for the analysis was sourced from a MIMIC II database instance running the PostgreSQL (version 9.2.10) engine. The package `RPostgreSQL` provided a Database Interface (DBI) compliant driver for R to access the PostgreSQL database system.
 
-```{r database_connection, message=FALSE, echo=TRUE}
+```{r database_connection, message=FALSE, echo=TRUE, eval=FALSE}
 # devtools::add_path('~/usr/local/bin/psql')
 # devtools::install("~/Downloads/rpostgresql-read-only/RPostgreSQL/")
 db <- src_postgres(dbname = "MIMIC2",
@@ -74,7 +76,7 @@ This study examined adults ($\geq$ 16 years of age). Since our objective is to t
 
 The outcome measure for this study was any instance of sepsis on the "sepsis continuum" - sepsis (995.91), severe sepsis (995.92), or septic shock (785.52) - as defined by International Classification of Diseases, 9th revision (ICD9). Severity of sepsis was not graded in this study, and thus any patient with sepsis-related ICD-9 codes was determined to have the same level of risk.
 
-```{r caseid, cache=TRUE}
+```{r caseid, eval=FALSE}
 query <- sql(
 "SELECT subject_id, hadm_id, icustay_id
 FROM mimic2v26.icustay_detail
@@ -91,7 +93,7 @@ caseID <- tbl(db, query) %>%
 
 For our negative controls, we randomly sampled 5000 patients from the MIMIC II database who met the same exclusionary criteria.
 
-```{r controlid, cache=TRUE}
+```{r controlid, eval=FALSE}
 query <- sql(
 "SELECT subject_id, hadm_id, icustay_id
 FROM mimic2v26.icustay_detail
@@ -103,7 +105,7 @@ controlID <- tbl(db, query) %>%
     mutate(label = "control")
 ```
 
-```{r random_subset, cache=TRUE}
+```{r random_subset, eval=FALSE}
 set.seed(1)
 randomSubset <- sample(controlID$subject_id, 5000)
 controls <- controlID[controlID$subject_id %in% randomSubset, ]
@@ -114,7 +116,7 @@ ids <- rbind(caseID, controls)
 
 The "ground truth" outcome for a patient is obscured by confounding medical interventions [@Paxton2013AMIAAnnuSympProc]. For example, we cannot determine the true sepsis risk for patients who receive antibiotics upon admission into the ICU because the treatment masks the "ground truth" - we don't know whether the physician was right or wrong his risk assessment of the patient. To avoid bias introduced by these so-called confounding medical interventions, patients who have undergone treatment with antibiotics within the first 24 hours will also be excluded. 
 
-```{r microbiology, cache=TRUE}
+```{r microbiology, eval=FALSE}
 query <- sql(
 "SELECT a.subject_id AS subject_id, a.hadm_id AS hadm_id, a.ab_itemid AS ab_itemid, 
         a.charttime - b.admit_dt AS sepsis_flag
@@ -130,7 +132,7 @@ microbiology <- tbl(db, query) %>%
     collect()
 ```
 
-```{r microbiology_exclusion}
+```{r microbiology_exclusion, eval=FALSE}
 ids %<>% filter(!(hadm_id %in% microbiology$hadm_id))
 ```
 
@@ -146,7 +148,7 @@ Since we are interested in creating a classifier that can predict the onset of s
 
 We extract all variables from the `demographic` table, which includes items like religious affiliation, insurance information, and marriage status. From the `icustay_detail` table, we extract patient information that was recorded upon admission, such as age, admission time, weight, height, etc.
 
-```{r demographic, cache=TRUE}
+```{r demographic, eval=FALSE}
 query <- sql(
 "SELECT *
 FROM mimic2v26.demographic_detail AS a
@@ -161,7 +163,7 @@ demographic <- tbl(db, query) %>%
 
 To avoid the pitfalls of categorical features with zero variance, we collapsed classes into a smaller number of sensible categories. To deal timestamps, we factorized time into "morning", "afternoon", "evening", and "night" levels.
 
-```{r}
+```{r demographic_preprocess, eval=FALSE}
 collapseRace <- function(race) {
     if (str_detect(race, "white")) return("white")
     else if (str_detect(race, "black")) return("black")
@@ -208,7 +210,7 @@ demographic$religion_descr <- sapply(tolower(demographic$religion_descr),
 
 We determined "routine clinical measurements" to be variables in which over 80% of our population had at least 1 clinical measurement recorded on a per hourly basis during the first 24 hours. Not surprisingly, these variables were `respiratory rate`, `pulse oximetry`, `heart rate`, `non-invasive blood pressure`, `white blood cell count`, `sofa score`, `sapsi score`, and `temperature`. 
 
-```{r chartevents, cache=TRUE}
+```{r chartevents, eval=FALSE}
 query <- sql(
 "SELECT subject_id, icustay_id, itemid, charttime, value1num 
 FROM mimic2v26.chartevents 
@@ -233,7 +235,7 @@ chartevents <- tbl(db, query) %>%
     ungroup()
 ```
 
-```{r chartlabels}
+```{r chartlabels, eval=FALSE}
 query <- sql(
 "SELECT itemid, label
 FROM mimic2v26.d_chartitems
@@ -243,7 +245,7 @@ chartLabels <- tbl(db, query) %>%
     collect()
 ```
 
-```{r}
+```{r chartlabels_preprocess, eval=FALSE}
 chartLabels %<>%
     ## clean up formatting of labels
     mutate(label = tolower(label),
@@ -255,9 +257,13 @@ charteventsDiscrete <- chartevents %>%
     join(chartLabels, by="itemid", type="inner")
 ```
 
-Subsequent tables from the MIMIC II database were linked through a combination of the ICU stay IDs, subject IDs, and chart item IDs (for features). Routine clinical features were then discretized by time cutoffs, melted, and casted in order to create each hour time point as a feature in itself. To evaluate the performance of our prediction models with respect to time, we then created summary statistics (mean, min, max, sd) for each clinical feature using data aggregated at 1 hour, 3 hours, 6 hours, 12 hours, and 24 hours.
+Subsequent tables from the MIMIC II database were linked through a combination of the ICU stay IDs, subject IDs, and chart item IDs (for features). Routine clinical features were then discretized by time cutoffs, melted, and casted in order to create each hour time point as a feature in itself. To evaluate the performance of our prediction models with respect to time, we then created summary statistics (mean, min, max, sd) for each clinical feature using the discretized values.
 
-```{r chartevents2, cache=TRUE}
+```{r load_data}
+load("../data/sql_dump.RData")
+```
+
+```{r discretize_chartevents}
 summarizeByHour <- function(features, hour) {
     summarizedFeatures <- features %>%
         dplyr::select(icustay_id, label, intHourR, value) %>%
@@ -284,9 +290,15 @@ Following data extraction, 38 features were available for predictive analysis.
 
 Missing values were subsequently identified and imputed using kNN imputation with $k=10$. Standardization of continuous clinical measures was performed on numeric features in order to establish comparability (mean of 0 and a standard deviation of 1). Values falling outside the range will allow us to determine outliers and impossible values.
 
-Six models were then selected for prediction of sepsis: logistic regression, regularized logistic regression, naïve Bayes, and C4.5-like decision trees (information gain), recursive partitioning trees (gini impurity), and random forest. Examiniation for collinearity was peformed using linear correlations, resulting in 27 features. The remaining models were conducted on the full set of 39 features. All methodologies were evaluated using repeated 10-fold cross validation to obtain 30 resamples with results represented using area under the receiver operating characteristic curves (AUROC).
+Six models were then selected for prediction of sepsis: logistic regression, regularized logistic regression, naïve Bayes, and C4.5-like decision trees (information gain), recursive partitioning trees (gini impurity), and random forest. Examiniation for collinearity was peformed using linear correlations, resulting in 27 features. The remaining models were conducted on the full set of 39 features. All methodologies were evaluated using repeated 10-fold cross validation to obtain 30 resamples with results represented using area under the receiver operating characteristic curves (AUROC). AUROC was chosen as a performance statistic because it is insensitive to class balance issues. 
 
-```{r preprocessing}
+Since our goal is to detect early onset of sepsis, we ideally want our predictive model to have high AUROC when predicting on data available within the first hour. We will also train our models on data collected at the following time intervals, e.g. 3 hours, 6 hours, 12 hours, and 24 hours after ICU admission. By doing this, we will be able to assess the stability of our performance statistics with respect to elapsed time in the ICU and determine whether the first hour of data is sufficient in a predictive model for sepsis.
+
+Finally, to determine whether or not our prediction models perform better than the SIRS criteria mentioned above, we will create an implementation of the SIRS criteria and compare models using the "balanced accuracy" measure, which avoids inflated performance estimates on imbalanced datasets. It is defined as the arithmetic mean of sensitivity and specificity:
+
+$balanced\ accuracy = \frac{sensitivity + specificity}{2}$
+
+```{r preprocessing, cache=TRUE}
 preProcessFeatures <- function(features) {
     ## remove id and replace as index
     row.names(features) <- features$icustay_id
@@ -335,10 +347,12 @@ featuresList <- lapply(featuresList, preProcessFeatures)
 
 A total of 2,783 patients were used for analysis, representing 2,783 unique ICU admissions. Among the cohort, 17.8% developed some form of sepis during their ICU stay.
 
-## Table 1: Descriptive Statistics
+## Table 1: Descriptive Statistics for Selected Features
 
-```{r}
-describe(descriptives, digits=3, spacing=0)
+```{r descriptives}
+descriptives %>%
+    dplyr::select(label, gender, contains("descr"), contains("mean")) %>%
+    describe(digits=3, spacing=0)
 ```
 
 ```{r exploratory_plots, eval=FALSE}
@@ -374,9 +388,9 @@ catPlots
 numSum(features)
 ```
 
-## Cross Validation
+## Model Selection
 
-```{r}
+```{r model_fit, cache=TRUE}
 fitModels <- function(features) {
     library(doMC)
     registerDoMC(cores=2)
@@ -447,39 +461,86 @@ fitModels <- function(features) {
 					 tuneLength=3)
 	message("Finished fitting Random Forest.")
 	
-	return(list(logModel, regLogModel, nbModel, giniModel, infoModel, rfModel))
+	return(list(logModel=logModel, 
+	            regLogModel=regLogModel, 
+	            nbModel=nbModel, 
+	            giniModel=giniModel, 
+	            infoModel=infoModel, 
+	            rfModel=rfModel))
 }
 modelList <- lapply(featuresList, fitModels)
 ```
 
-```{r}
-res <- resamples(modelList)
-summary(res)
-dotplot(res)
+```{r model_cache}
+save.image( "../data/model_cache.Rdata")
 ```
 
+### Cross-Validation
 
-```{r}
-library(ROCR)
-probsInfo <- predict(modelList$randomForest, testing, type="prob")
-pred <- prediction(1-probsInfo$case, testing$label)
-perf <- performance(pred, "tpr", "fpr")
-plot(perf, colorize=TRUE)
+Performance statistics for repeated 10-fold cross validation did not vary significantly when trained on data available at 1 hour, 3 hours, 6 hours, 12 hours, and 24 hours (shown in sequential order).
+
+```{r resample_plots, results="hide", fig.align="center", fig.height=4, fig.width=4}
+modelNames <- c("LogReg", "RegularizedLogReg", "NaiveBayes", "infoTree", "giniTree", "randomForest")
+res <- lapply(modelList, resamples, modelNames=modelNames)
+lapply(res, dotplot)
 ```
 
-```{r}
-finalModel <- 
-probsInfo <- predict(finalModel, testing, type="prob")
-rocCurve <- roc(response=testing$label,
-                predictor=probsInfo[, "case"],
-                levels=rev(levels(testing$label)))
-plot(rocCurve, print.thres=c(.5, .2), type="S", legacy.axes = TRUE)
+Given the results of our sensitivity analysis, we opted for the models fitted on the first hour of data made available in the ICU. Resampled ROC statistics for each of these models are shown below.
+
+```{r roc_stats}
+resam <- summary(res[[1]])
+kable(resam$statistics$ROC[, -7])
 ```
 
+Under 10-fold cross validation, regularized logistic regression had an ROC of 0.808, random forest had an ROC of 0.804, logistic regression had an ROC of 0.781, Naive Bayes had an ROC of 0.764, C4.5-like decision trees had an ROC of 0.67, and CART decision trees had an ROC of 0.528. With respect to the tradeoff between performance and interpretability, logistic regression was not too shabby.
 
-# Test Predictions
+```{r model_1hr}
+model <- modelList[[5]]
+testing <- featuresList[[5]]$testing
+logRegTest <- featuresList[[5]]$logRegTest
+```
 
-```{r baseline}
+### Variable Importance
+
+For logistic regression, top features selected for classification included `SAPS-I score`, `MICU as First Service`, `Minimum Non-invasive Blood Pressure`, and `Maximum Pulse Oximetry`. For regularized logistic regression, 10 features remained after coefficients were penalized, which included `CSRU as First Service`, `Private Medical Insurance`, and `Morning ICU Admission`. As determined by the decrease in the mean Gini in our CART model, `First SOFA score`, `Minimum White Blood Cell Count`, and `Maximium Respiratory Rate` were the most important features. As determined by the decrease in the mean Gini in our random forest model, `Mean White Blood Cell Count`, `First SOFA Socre`, and `Mean Heart Rate` were determined to be the most important features. SOFA, SAPS-I, heart rate, white blood cell count, pulse oximetry, and respiratory rate have been previously described as risk factors for sepsis (see SIRS criteria above).
+
+```{r var_importance, eval=FALSE}
+lapply(model, varImp, scale=FALSE)
+```
+
+```{r varimp_plot}
+varImpPlot(model[[6]]$finalModel, main="RF Variable Importance", cex=0.7)
+```
+
+## Hold-Out Performance
+
+### Between-Model Comparison
+
+Most of the classifiers showed strong predictive power in predicting sepsis in the ICU. Because our positive class is in the minority (cases ~ 18%), accuracy statistics were not suitable for model assessment. Instead we used ROC statistics, which are agnostic to class imbalance issues. C4.5-like decision trees were not included in the figure below because we were unable to debug the prediction task.
+
+```{r roc_plot, results="hide"}
+testingList <- list(testing$label, testing$label, testing$label, testing$label, testing$label)
+cols <- brewer.pal(5, "Set1")
+
+logRegPred <- 1 - predict(model[[1]], logRegTest, type="prob")$case
+regLogRegPred <- 1 - predict(model[[2]], testing, type="prob")$case
+nbPred <- 1 - predict(model[[3]], testing, type="prob")$case
+giniPred <- 1 - predict(model[[4]], testing, type="prob")$case
+rfPred <- 1 - predict(model[[6]], testing, type="prob")$case
+
+probsList <- list(logRegPred, regLogRegPred, nbPred, giniPred, rfPred)
+predList <- prediction(probsList, testingList)
+perf <- performance(predList, "tpr", "fpr")
+
+plot(perf, col=as.list(cols))
+legend(0.7, 0.6, modelNames[-5], col=cols, lwd=3, cex=0.6)
+```
+
+### Baseline Comparison
+
+So did our models perform better than the current SIRS criteria in predicting sepsis in the ICU?
+
+```{r baseline_prediction}
 SIRS <- function(temp, hr, rr, wbc) {
     count <- 0
     ## better safe than sorry
@@ -490,24 +551,58 @@ SIRS <- function(temp, hr, rr, wbc) {
     if (wbc > 12) count <- count + 1
     return(ifelse(count >= 2, "case", "control"))
 }
-
-baselinePred <- sapply(1:nrow(testing1), function(i) {
-    SIRS(testing1$temperature_mean[i], testing1$heart_rate_mean[i], testing1$respiratory_rate_mean[i], testing1$wbc_mean[i])
+testingUnscaled <- featuresList[[1]]$testingUnscaled
+baselinePred <- sapply(1:nrow(testingUnscaled), function(i) {
+    SIRS(testingUnscaled$temperature_mean[i], testingUnscaled$heart_rate_mean[i], 
+         testingUnscaled$respiratory_rate_mean[i], testingUnscaled$wbc_mean[i])
     })
-
-confusionMatrix(baselinePred, testing1$label)
-confusionMatrix(rep("control", nrow(testing1)), testing1$label)
-
 ```
 
+```{r performance_stats}
+logRegPred <- predict(model[[1]], logRegTest)
+regLogRegPred <- predict(model[[2]], testing)
+nbPred <- predict(model[[3]], testing)
+giniPred <- predict(model[[4]], testing)
+rfPred <- predict(model[[6]], testing)
+predList <- list(baselinePred, logRegPred, regLogRegPred, nbPred, giniPred, rfPred)
 
-# SIRS Classifier
-
-```{r}
-
-
-
+perfStats <- lapply(predList, confusionMatrix, testing$label)
+perfStats <- lapply(perfStats, with, byClass)
+perfStats <- lapply(perfStats, "[", c("Sensitivity", "Specificity", "Pos Pred Value", "Neg Pred Value", "Balanced Accuracy"))
+perfStats <- do.call(rbind, perfStats)
+perfStats <- data.frame(perfStats)
+row.names(perfStats) <- c("SIRS", "LogReg", "RegLogReg", "NaiveBayes", "GiniTree", "RandomForest")
+kable(perfStats)
 ```
 
+Yes, but not by much. Moreover, training on data available at the 3 hour, 6 hour, 12 hour, and 24 hour time slices only marginally improved the performance of our prediction models with regularized logistic regression leading the pack. At the end of the day, however, logistic regression had the best balanced accuracy using one hour's worth of data on our hold-out set at 59.5%. 
 
+# Discussion
 
+When we began this project, we sought to answer the following question: could we develop a prediction model for the onset of sepsis in the ICU using clinical history and non-invasive physiological data obtained in the first hour of admission? The short answer: yes, but predictive performance is only marginally better than current (and simpler) methodologies.
+
+Not suprisingly, fitting more complex models does not necessarily lead to better performance. While we used repeated 10-fold cross validation to fine-tune complexity parameters, we very likely overfit our training data using random forest - which performed worse than the SIRS criteria on our hold-out set. In some instances, regularized logistic regression performed marginally better than other models because 10-fold cross validation tuned the alpha parameter to 1 (LASSO), which allowed the model to undergo automated feature selection by shrinking some coefficients zero. However, the tradeoff in the intepretability of the model in its native form may not be worth the marginal improvements in predictive power. After all, clinical decision support systems should have some descriptive transparency. Penalized regression models and random forest are not likely to provide that. "Vanilla" logistic regression - with well-understood parameters, wide usage, and one of the top balanced accuracy measures in our study - is.
+
+Moreover, it is important to note that performance statistics provided in this study are based on a 50% probability threshold for classification. In other words, samples are classified as "sepsis" only if the probability of class is greater than 50%. Since false positives (patients classified as sepsis when they are not at risk) and false negatives (patients classified as not sepsis when they are at risk) are not equal in this scenario, we may want to adjust the treshold downwards and attempt to improve the recall of our prediction models. 
+
+## Limitations and Future Work
+
+Better features would have likely improved the performance of our prediction models. For one, our decision to restrict features to routine clinical variables was based heavily on domain knowledge rather than a purely data-driven methodology. This meant that our models suffered from substantial information loss. Determining a better definition for "routine" and translating that definition into an automated feature selection process could have given us more (and better) features to work with from the start. Second, valuable information from temporal features was not fully extracted using summary statistics (mean, min, max, sd). While these simple statistical features are a good starting point, future prediction models could incoporate parameters of ARIMA models or frequencies of the $k$ peaks in amplitude in the Discrete Fourier Transforms for the detrended $d$ dimensions. 
+
+Moreover, our decision to define positive cases of sepsis from ICD-9 codes presented a number of problems. For one, our so-called "ground truth" labels may, in fact, be mislabled due to administrative errors. This would mean that we were training our classifiers on incorrectly labeled samples, essentially making this work non-generalizable and effectively useless. Moreover, we did not consider where the rank of the sepsis code within the ICD-9 sequence for each individual patient. For example, we considered a patient with a sepsis code in the #1 slot (indicating a primary diagnosis) and the #10 slot to be the same. Future studies could use prior weights based on this ICD-9 code sequence or avoid ICD-9 codes altogether and determine a physiological cutoff for the onset of sepsis.
+
+## Conclusions
+
+In this project, we have shown that a) supervised classification techniques b) summary statistics for routine, non-invasive clinical features and c) imputation methods can be implemented in order to predict sepsis in the ICU, albeit only marginally better than current systems. Logistic regression - after feature elimination based on collinearity - provided the best performance while maintaining interpretability. This work presented in this report may serve to guide the development of an early warning system for sepsis in the intensive care setting. 
+
+# Acknowledgements
+
+Thanks Noemie, Andrew, and William for making our last semester at CUMC a blast! And for making access to the MIMIC II database a lot more tolerable than it otherwise would have been.
+
+# Session Information
+
+```{r session_info}
+sessionInfo()
+```
+
+# References
