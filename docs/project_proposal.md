@@ -2,8 +2,8 @@
 title: Project Proposal
 author: Ryan Quan, Frank Chen
 date: 2015-03-16
-bibliography: "references/binf-project.bib"
-csl: "references/csl/bmj.csl"
+bibliography: "/Users/Quan/GitHub/binf-project/docs/references/binf-project.bib"
+csl: "/Users/Quan/GitHub/binf-project/docs/references/csl/bmj.csl"
 ---
 
 # Predicting Sepsis in the Intensive Care Unit
