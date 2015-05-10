@@ -1,6 +1,9 @@
 # Predicting Sepsis in the Intensive Care Unit
 
-Authors: Ryan Quan (rcq2102@columbia.edu), Frank Chen (fc2451@columbia.edu)
+Ryan Quan (rcq2102@columbia.edu)  
+Frank Chen (fc2451@columbia.edu)
+
+[Github Repo](https://www.github.com/frankchen07/binf-project)
 
 ## About
 
