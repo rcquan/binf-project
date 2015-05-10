@@ -489,7 +489,7 @@ Given the results of our sensitivity analysis, we opted for the models fitted on
 
 ```{r roc_stats}
 resam <- summary(res[[1]])
-kable(resam$statistics$ROC[, -7])
+kable(resam$statistics$ROC[, -7], digits=4)
 ```
 
 Under 10-fold cross validation, regularized logistic regression had an ROC of 0.808, random forest had an ROC of 0.804, logistic regression had an ROC of 0.781, Naive Bayes had an ROC of 0.764, C4.5-like decision trees had an ROC of 0.67, and CART decision trees had an ROC of 0.528. With respect to the tradeoff between performance and interpretability, logistic regression was not too shabby.
@@ -572,7 +572,7 @@ perfStats <- lapply(perfStats, "[", c("Sensitivity", "Specificity", "Pos Pred Va
 perfStats <- do.call(rbind, perfStats)
 perfStats <- data.frame(perfStats)
 row.names(perfStats) <- c("SIRS", "LogReg", "RegLogReg", "NaiveBayes", "GiniTree", "RandomForest")
-kable(perfStats)
+kable(perfStats, digits=4)
 ```
 
 Yes, but not by much. Moreover, training on data available at the 3 hour, 6 hour, 12 hour, and 24 hour time slices only marginally improved the performance of our prediction models with regularized logistic regression leading the pack. At the end of the day, however, logistic regression had the best balanced accuracy using one hour's worth of data on our hold-out set at 59.5%. 
